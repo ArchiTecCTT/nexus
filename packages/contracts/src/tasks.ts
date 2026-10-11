@@ -30,9 +30,10 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
   // `queued` : l'utilisateur demande des changements et relance la session avec une nouvelle consigne.
   waiting_review: ["completed", "queued", "running", "failed", "cancelled", "interrupted"],
   interrupted: ["queued", "failed", "cancelled"],
-  completed: [],
+  // Une session terminée ou annulée peut reprendre (nouveau message dans la conversation).
+  completed: ["queued"],
   failed: ["queued"],
-  cancelled: [],
+  cancelled: ["queued"],
 };
 
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {

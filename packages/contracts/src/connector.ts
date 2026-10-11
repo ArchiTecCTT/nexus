@@ -67,8 +67,24 @@ export const AgentTaskRequest = z.strictObject({
     .min(1000)
     .max(24 * 3600 * 1000),
   budget: Budget.optional(),
+  /**
+   * Serveurs MCP fournis par Nexus à l'agent (ex. « nexus » : messagerie de l'équipe dans l'Orchestre). Chaque
+   * connecteur les transmet à sa CLI sous la forme qu'elle comprend ; ignorés par celles qui n'en ont pas.
+   */
+  mcpServers: z
+    .array(
+      z.strictObject({
+        name: z.string().regex(/^[a-z][a-z0-9_-]{0,30}$/),
+        command: AbsolutePath,
+        args: z.array(z.string().max(2000)).max(20),
+        env: z.record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/), z.string().max(4000)),
+      }),
+    )
+    .max(4)
+    .optional(),
 });
 export type AgentTaskRequest = z.infer<typeof AgentTaskRequest>;
+export type McpServerSpec = NonNullable<AgentTaskRequest["mcpServers"]>[number];
 
 /** Codes d'échec normalisés (proposition D-3 de l'ADR-001, intégrée au contrat v1). */
 export const FailureCode = z.enum([

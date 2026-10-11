@@ -79,10 +79,12 @@ test("AgentTaskRequest : chemin relatif et timeout hors bornes refusés", () => 
   assert.equal(AgentTaskRequest.safeParse({ ...base, timeoutMs: 10 }).success, false);
 });
 
-test("machine d'états : terminaux sans sortie, interrupted repris via queued, jamais running direct", () => {
+test("machine d'états : sessions finies reprises seulement via queued, interrupted repris via queued, jamais running direct", () => {
   for (const s of TaskStatus.options) assert.ok(Array.isArray(TASK_TRANSITIONS[s]), s);
-  assert.deepEqual(TASK_TRANSITIONS.completed, []);
-  assert.deepEqual(TASK_TRANSITIONS.cancelled, []);
+  // Une session terminée ou annulée peut reprendre (nouveau message), uniquement en repassant par la file.
+  assert.deepEqual(TASK_TRANSITIONS.completed, ["queued"]);
+  assert.deepEqual(TASK_TRANSITIONS.cancelled, ["queued"]);
+  assert.equal(canTransition("completed", "running"), false);
   assert.equal(canTransition("interrupted", "queued"), true);
   assert.equal(canTransition("interrupted", "running"), false);
   assert.equal(canTransition("draft", "running"), false);
@@ -141,6 +143,15 @@ test("NewDomainEvent et AgentMessage : enveloppes versionnées", () => {
 test("IPC : enveloppe stricte, canaux connus uniquement, pas de prototype pollution", () => {
   assert.equal(IpcEnvelope.safeParse({ requestId: randomUUID(), channel: "app.info", payload: {} }).success, true);
   assert.equal(IpcEnvelope.safeParse({ requestId: "x", channel: "app.info", payload: {} }).success, false);
+  // Domaine en camelCase (ex. deployPlan.*) : accepté par l'enveloppe.
+  assert.equal(
+    IpcEnvelope.safeParse({ requestId: randomUUID(), channel: "deployPlan.get", payload: {} }).success,
+    true,
+  );
+  assert.equal(
+    IpcEnvelope.safeParse({ requestId: randomUUID(), channel: "DeployPlan.get", payload: {} }).success,
+    false,
+  );
   assert.equal(isIpcChannel("app.info"), true);
   assert.equal(isIpcChannel("__proto__"), false);
   assert.equal(isIpcChannel("constructor"), false);

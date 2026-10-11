@@ -7,3 +7,4 @@ export * from "./policy.ts";
 export * from "./tasks.ts";
 export * from "./planning.ts";
 export * from "./deploy-plan.ts";
+export * from "./orchestra.ts";

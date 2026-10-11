@@ -7,6 +7,7 @@ import { AgentMessage, MessageType } from "./messages.ts";
 import { MissionSummary, ProjectRelativePath, TaskSummary, TeamSummary } from "./planning.ts";
 import { Approval, PermissionMode } from "./policy.ts";
 import { DeploymentPlan } from "./deploy-plan.ts";
+import { OrchestraDetail, OrchestraFeedEntry, OrchestraSummary } from "./orchestra.ts";
 import { GovernanceMode } from "./tasks.ts";
 
 export const IPC_INVOKE_CHANNEL = "nexus:invoke";
@@ -31,7 +32,7 @@ export const IpcEnvelope = z.strictObject({
   requestId: Id,
   channel: z
     .string()
-    .regex(/^[a-z]+(\.[a-zA-Z]+)+$/)
+    .regex(/^[a-z][a-zA-Z]*(\.[a-zA-Z]+)+$/)
     .max(80),
   payload: z.unknown(),
 });
@@ -167,6 +168,8 @@ export const IpcPushEvent = z.discriminatedUnion("type", [
     target: z.string().max(300),
     reason: z.string().max(200),
   }),
+  /** Fil de l'Orchestre (plan, répartition, transmissions, revues, messages entre agents). */
+  z.strictObject({ type: z.literal("orchestra"), missionId: Id, entry: OrchestraFeedEntry }),
   /** Journal en direct d'une étape de déploiement (expurgé des secrets). */
   z.strictObject({
     type: z.literal("deploy-log"),
@@ -365,6 +368,13 @@ export const ipcChannels = {
         error: z.string().max(300).optional(),
       }),
     ),
+  },
+  /** Supprime une session (copie isolée et historique local du terminal compris). Refusé tant qu'elle tourne. */
+  "sessions.delete": { request: z.strictObject({ taskId: Id }), response: Ok },
+  /** Sortie enregistrée du terminal d'une session interactive (pour la relire après coup). */
+  "sessions.transcript": {
+    request: z.strictObject({ taskId: Id }),
+    response: z.strictObject({ data: z.string(), truncated: z.boolean() }),
   },
   /** Rouvre la TUI d'une session existante (reprise de la conversation native si le CLI le permet). */
   "sessions.resumeInteractive": {
@@ -580,6 +590,50 @@ export const ipcChannels = {
   "deploy.run": {
     request: z.strictObject({ approvalId: Id }),
     response: z.strictObject({ url: z.string(), environment: z.enum(["preview", "production"]) }),
+  },
+  /**
+   * Orchestre : un objectif, un chef d'orchestre (agent IA) et une équipe d'agents. Le chef découpe, répartit, transmet
+   * le travail entre agents, relit chaque résultat et intègre. `full` : tout est autonome ; `approve-plan` : le plan
+   * attend la validation de l'utilisateur avant l'exécution.
+   */
+  "orchestra.start": {
+    request: z.strictObject({
+      projectId: Id,
+      goal: z.string().min(1).max(20_000),
+      leadConnectorId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/),
+      memberConnectorIds: z
+        .array(z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/))
+        .min(1)
+        .max(6),
+      mode: z.enum(["autonomous", "sandboxed", "supervised"]),
+      autonomy: z.enum(["full", "approve-plan"]),
+      maxParallel: z.number().int().min(1).max(6).optional(),
+    }),
+    response: z.strictObject({ missionId: Id }),
+  },
+  "orchestra.list": { request: z.strictObject({ projectId: Id }), response: z.array(OrchestraSummary) },
+  "orchestra.get": { request: z.strictObject({ missionId: Id }), response: OrchestraDetail },
+  /** Valide le plan proposé par le chef (autonomie « approve-plan »). */
+  "orchestra.approvePlan": { request: z.strictObject({ missionId: Id }), response: Ok },
+  "orchestra.stop": { request: z.strictObject({ missionId: Id }), response: Ok },
+  /** Fichiers modifiés par l'équipe (branche de l'orchestre comparée au projet). */
+  "orchestra.changes": {
+    request: z.strictObject({ missionId: Id }),
+    response: z.array(
+      z.strictObject({
+        path: z.string(),
+        status: z.string(),
+        additions: z.number().int(),
+        deletions: z.number().int(),
+      }),
+    ),
+  },
+  /** Intègre le travail de l'équipe dans la branche courante du projet (merge --no-ff, confirmé par boîte native). */
+  "orchestra.merge": { request: z.strictObject({ missionId: Id }), response: z.strictObject({ summary: z.string() }) },
+  /** Message de l'utilisateur au chef d'orchestre (ou à toute l'équipe) : pris en compte dans les consignes suivantes. */
+  "orchestra.message": {
+    request: z.strictObject({ missionId: Id, text: z.string().min(1).max(8000) }),
+    response: Ok,
   },
   /** Plan de déploiement du projet (null s'il n'a jamais été analysé). */
   "deployPlan.get": { request: z.strictObject({ projectId: Id }), response: DeploymentPlan.nullable() },
