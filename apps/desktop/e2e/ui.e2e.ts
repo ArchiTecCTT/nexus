@@ -568,6 +568,115 @@ test("orchestre en échec : bandeau des erreurs, réattribution mise en forme", 
   await shot("20-orchestre-echec");
 });
 
+test("tâche → vue d'activité : attente des dépendances, flux en direct, séparateur de relance", async () => {
+  // Mission et tâches créées par les vrais canaux IPC (aucun agent lancé).
+  const ids = await page.evaluate(async () => {
+    const nexus = (
+      window as unknown as {
+        nexus: { invoke(c: string, p: unknown): Promise<{ ok: boolean; data?: unknown; error?: unknown }> };
+      }
+    ).nexus;
+    const key = Object.keys(localStorage).find((k) => k.startsWith("nexus.layout.")) ?? "";
+    const projectId = key.slice("nexus.layout.".length);
+    const must = async <T>(c: string, p: unknown) => {
+      const r = await nexus.invoke(c, p);
+      if (!r.ok) throw new Error(`${c}: ${JSON.stringify(r.error)}`);
+      return r.data as T;
+    };
+    const team = await must<{ teamId: string }>("teams.create", { projectId, name: "E2E", governanceMode: "MANUAL" });
+    const mission = await must<{ missionId: string }>("missions.create", {
+      projectId,
+      teamId: team.teamId,
+      title: "Mission E2E activité",
+      prompt: "Vérifier la vue d'activité",
+    });
+    const base = { description: "", allowedPaths: ["src"], acceptance: ["ok"] };
+    const first = await must<{ taskId: string }>("tasks.add", {
+      missionId: mission.missionId,
+      task: { ...base, title: "Préparer l'API", dependsOn: [] },
+    });
+    const second = await must<{ taskId: string }>("tasks.add", {
+      missionId: mission.missionId,
+      task: { ...base, title: "Écrire les tests", dependsOn: [first.taskId] },
+    });
+    return { missionId: mission.missionId, first: first.taskId, second: second.taskId };
+  });
+  await page
+    .getByRole("navigation", { name: "Barre d'activité" })
+    .getByRole("button", { name: "Missions avancées" })
+    .click();
+  await page
+    .getByTestId("sidebar")
+    .getByRole("button", { name: /Mission E2E activité/ })
+    .click();
+  const tasks = page.getByTestId("mission-tasks");
+  await tasks.getByRole("button", { name: /Écrire les tests/ }).click();
+  await page.waitForTimeout(1500);
+  await shot("21a-debug");
+  const activity = page.locator("[data-testid=session-panel]:visible");
+  await activity.getByTestId("activity-waiting").getByText("En attente de : Préparer l'API").waitFor();
+  await tasks.getByRole("button", { name: /Préparer l'API/ }).click();
+  await page
+    .locator("[data-testid=session-panel]:visible")
+    .getByTestId("activity-waiting")
+    .getByText(/Prête/)
+    .waitFor();
+  // Deux exécutions (relance) injectées depuis le main.
+  await app.evaluate(
+    ({ BrowserWindow }, { taskId }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      const runA = "11111111-1111-4111-8111-111111111111";
+      const runB = "22222222-2222-4222-8222-222222222222";
+      const send = (runId: string, event: Record<string, unknown>) =>
+        w?.webContents.send("nexus:event", { type: "run", taskId, runId, event: { taskId, ...event } });
+      send(runA, { kind: "started", sequence: 1 });
+      send(runA, { kind: "output", sequence: 2, channel: "message", text: "Je lis le dépôt." });
+      send(runA, { kind: "tool-request", sequence: 3, tool: "read_file", payloadRef: "src/index.ts" });
+      send(runA, { kind: "failed", sequence: 4, code: "timeout", message: "délai dépassé" });
+      send(runB, { kind: "started", sequence: 1 });
+      send(runB, { kind: "output", sequence: 2, channel: "message", text: "Nouvelle tentative en cours." });
+    },
+    { taskId: ids.first },
+  );
+  const view = page.locator("[data-testid=session-panel]:visible");
+  await view.getByText("Je lis le dépôt.").waitFor();
+  await view.getByText("Relance 2").waitFor();
+  await view.getByText("Nouvelle tentative en cours.").waitFor();
+  await view
+    .getByText(/délai dépassé/)
+    .first()
+    .waitFor();
+  await shot("21-activite-tache");
+});
+
+test("cadrage : boîte modale à 1024×700 (pied visible, corps qui défile), plan de travail à 1920×1080", async () => {
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await page.getByRole("button", { name: "Orchestre", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Nouvel orchestre" });
+  await dialog.waitFor();
+  const box = await dialog.boundingBox();
+  assert.ok(
+    box && box.x >= 0 && box.x + box.width <= 1024 && box.y >= 0 && box.y + box.height <= 700,
+    "modale dans la fenêtre",
+  );
+  assert.ok(box && box.height <= 700 * 0.86, "hauteur max 85vh");
+  const launch = dialog.getByRole("button", { name: "Lancer un orchestre" });
+  const lb = await launch.boundingBox();
+  assert.ok(lb && lb.y + lb.height <= 700, "bouton du pied visible sans défiler");
+  const scrolls = await dialog.locator(".modal-body").evaluate((el) => el.scrollHeight > el.clientHeight);
+  assert.ok(scrolls, "le corps défile");
+  const noOverflowX = await dialog.locator(".modal-body").evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+  assert.ok(noOverflowX, "pas de débordement horizontal");
+  await shot("22-modale-1024");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  await shot("23-plan-1024");
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.getByTestId("workbench").waitFor();
+  await shot("24-plan-1920");
+  await page.setViewportSize({ width: 1440, height: 900 });
+});
+
 test("agents : liste des sessions et bouton Nouvelle session", async () => {
   await page.getByRole("navigation", { name: "Barre d'activité" }).getByRole("button", { name: "Agents" }).click();
   await page.getByTestId("sessions-list").waitFor();

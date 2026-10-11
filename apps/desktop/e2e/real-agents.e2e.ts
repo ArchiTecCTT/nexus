@@ -59,7 +59,9 @@ before(async () => {
 after(async () => {
   if (!REAL) return;
   await app?.close().catch(() => undefined);
-  rmSync(root, { recursive: true, force: true });
+  // NEXUS_REAL_KEEP=1 : données conservées pour analyse (journal de l'orchestre, sessions).
+  if (process.env.NEXUS_REAL_KEEP === "1") console.log(`données conservées : ${root}`);
+  else rmSync(root, { recursive: true, force: true });
 });
 
 async function newSession(agent: RegExp, view: "Conversation" | "Terminal", prompt: string) {
@@ -158,5 +160,19 @@ test(
     );
     assert.ok(existsSync(join(projectDir, "calc.js")) && existsSync(join(projectDir, "calc.test.js")));
     execFileSync(process.execPath, ["--test", "calc.test.js"], { cwd: projectDir });
+  },
+);
+
+test(
+  "RÉEL : session dans le vrai terminal de l'agent (Claude)",
+  { skip: !REAL && "NEXUS_REAL_AGENTS=1 requis", timeout: 600_000 },
+  async () => {
+    await newSession(/Claude Code/, "Terminal", "Crée le fichier claude.txt contenant exactement : ok");
+    await waitFor(
+      () => existsSync(join(projectDir, "claude.txt")),
+      300_000,
+      "claude.txt créé par Claude dans son terminal",
+    );
+    await shot("4-terminal-claude");
   },
 );

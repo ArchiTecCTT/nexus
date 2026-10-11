@@ -14,6 +14,8 @@ import {
   Play,
   RefreshCw,
   Send,
+  ArrowDown,
+  CircleDashed,
   GitPullRequest,
   RotateCcw,
   ShieldX,
@@ -29,6 +31,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { call, toNexusError, type NexusError } from "../api.ts";
 import { errorText } from "../lib/actions.ts";
+import { useTaskContext } from "../lib/task-context.ts";
 import { TERMINAL_FONT, terminalTheme } from "./TerminalPanel.tsx";
 import { canResume, isInteractiveSession, openSessionTerminal, resumeSessionTerminal } from "../lib/agent-terminal.ts";
 import { allowSandboxDomain } from "../lib/sandbox-denials.ts";
@@ -54,7 +57,8 @@ type Block =
   | { kind: "tool"; key: string; tool: string; ref: string }
   | { kind: "system"; key: string; tone: "info" | "success" | "danger"; text: string }
   | { kind: "usage"; key: string; event: Extract<AgentEvent, { kind: "usage" }> }
-  | { kind: "user"; key: string; text: string };
+  | { kind: "user"; key: string; text: string }
+  | { kind: "run"; key: string; n: number };
 
 type FollowUp = { text: string; at: number; afterEntries: number };
 
@@ -68,8 +72,16 @@ function toBlocks(entries: RunEntry[], t: ReturnType<typeof useT>, followUps: Fo
       fi += 1;
     }
   };
-  entries.forEach(({ key, event }, index) => {
+  let runNo = 0;
+  let prevRun: string | undefined;
+  entries.forEach(({ key, event, runId }, index) => {
     flushUser(index);
+    // Plusieurs exécutions (relance) : séparateur « Relance n » entre elles.
+    if (runId !== prevRun) {
+      if (prevRun !== undefined) blocks.push({ kind: "run", key: `run-${runId}`, n: runNo });
+      runNo += 1;
+      prevRun = runId;
+    }
     const last = blocks[blocks.length - 1];
     switch (event.kind) {
       case "started":
@@ -151,6 +163,7 @@ function Collapsible({
 }
 
 const EMPTY: RunEntry[] = [];
+const NOT_STARTED = new Set(["draft", "ready", "queued", "blocked", "pending"]);
 
 /** Sortie enregistrée du terminal d'une session interactive terminée, relue dans un xterm en lecture seule. */
 function TranscriptView({ taskId }: { taskId: string }) {
@@ -240,6 +253,7 @@ export function SessionPanel({ params, api }: PanelProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<string | undefined>();
   const scroller = useRef<HTMLDivElement>(null);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const stick = useRef(true);
 
   const entries = stream?.entries ?? EMPTY;
@@ -253,7 +267,32 @@ export function SessionPanel({ params, api }: PanelProps) {
   }, [entries]);
   const followUps = useSessionsStore((s) => s.followUps[taskId]);
   const blocks = useMemo(() => toBlocks(entries, t, followUps), [entries, t, followUps]);
-  const status = session?.status ?? "unknown";
+  const ctx = useTaskContext(taskId);
+  // Durée de la dernière exécution (relances comprises), mise à jour chaque seconde tant qu'elle tourne.
+  const [now, setNow] = useState(Date.now());
+  const isRunning = ACTIVE_STATUSES.has(session?.status ?? ctx.status ?? "");
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isRunning]);
+  const runDuration = useMemo(() => {
+    const lastRun = entries[entries.length - 1]?.runId;
+    const run = entries.filter((e) => e.runId === lastRun && e.at);
+    const start = run[0]?.at;
+    if (!start) return undefined;
+    const end = isRunning ? now : (run[run.length - 1]?.at ?? start);
+    const sec = Math.max(0, Math.round((end - start) / 1000));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  }, [entries, isRunning, now]);
+  const lastFailure = useMemo(() => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const ev = entries[i]?.event;
+      if (ev?.kind === "failed") return `[${ev.code}] ${ev.message}`;
+    }
+    return undefined;
+  }, [entries]);
+  const status = session?.status ?? ctx.status ?? "unknown";
   const active = ACTIVE_STATUSES.has(status);
   const live = shownLive(status, rawLive);
   const markedInteractive = useSessionsStore((s) => Boolean(s.interactive[taskId]));
@@ -330,7 +369,7 @@ export function SessionPanel({ params, api }: PanelProps) {
           <Bot size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="session-title truncate">{session?.title ?? api.title}</h2>
+          <h2 className="session-title truncate">{session?.title ?? ctx.title ?? api.title}</h2>
           <div className="flex items-center gap-2 text-[11.5px] text-fg-muted">
             <Badge tone={tone}>
               {active && <span className="live-dot" aria-hidden />}
@@ -341,7 +380,12 @@ export function SessionPanel({ params, api }: PanelProps) {
                 {td("live.", live)}
               </Badge>
             )}
-            {session && <span title={session.connectorId}>{agentName(session.connectorId)}</span>}
+            {(session?.connectorId ?? ctx.connectorId) && (
+              <span title={session?.connectorId ?? ctx.connectorId}>
+                {agentName(session?.connectorId ?? ctx.connectorId ?? "")}
+              </span>
+            )}
+            {runDuration && <span className="font-mono">{runDuration}</span>}
             {session && <span>· {td("mode.", session.mode)}</span>}
             {quota && (
               <span
@@ -477,9 +521,25 @@ export function SessionPanel({ params, api }: PanelProps) {
           onScroll={(e) => {
             const el = e.currentTarget;
             stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            if (stick.current === awayFromBottom) setAwayFromBottom(!stick.current);
           }}
           aria-live="polite"
         >
+          {status === "failed" && (
+            <div className="notice notice-error mb-3" role="alert" data-testid="activity-failure">
+              <CircleAlert size={15} aria-hidden />
+              <div className="min-w-0">
+                <p className="notice-title">{t("activity.failedTitle")}</p>
+                {lastFailure && <p className="notice-detail whitespace-pre-wrap">{lastFailure}</p>}
+                {!lastFailure && ctx.lastFailureCode && <p className="notice-detail">{ctx.lastFailureCode}</p>}
+                {ctx.reassignments.map((r) => (
+                  <p key={r} className="notice-detail flex items-center gap-1.5">
+                    <RotateCcw size={12} aria-hidden /> {r}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
           {prompt && (
             <div className="msg msg-user">
               <div className="msg-avatar" aria-hidden>
@@ -502,8 +562,22 @@ export function SessionPanel({ params, api }: PanelProps) {
             <EmptyState icon={<Bot size={26} />} title={t("session.noEvents")} />
           )}
           {interactive && session && !session.terminalId && !active && <TranscriptView taskId={taskId} />}
+          {!stream?.loading && entries.length === 0 && NOT_STARTED.has(status) && (
+            <div className="activity-wait" data-testid="activity-waiting">
+              <CircleDashed size={15} aria-hidden />
+              {ctx.waitingFor.length > 0
+                ? t("activity.waitingFor", { tasks: ctx.waitingFor.join(", ") })
+                : t("activity.ready")}
+            </div>
+          )}
           {blocks.map((b) => {
             switch (b.kind) {
+              case "run":
+                return (
+                  <div key={b.key} className="orch-feed-phase" role="separator">
+                    <span>{t("activity.rerun", { n: b.n })}</span>
+                  </div>
+                );
               case "user":
                 return (
                   <div key={b.key} className="msg msg-user">
@@ -579,8 +653,8 @@ export function SessionPanel({ params, api }: PanelProps) {
                 );
             }
           })}
-          {active && (
-            <div className="typing-row">
+          {(active || live === "working") && (
+            <div className="typing-row" data-testid="activity-working">
               <div className="typing" aria-hidden>
                 <span />
                 <span />
@@ -588,6 +662,21 @@ export function SessionPanel({ params, api }: PanelProps) {
               </div>
               <span>{entries.length === 0 ? t("session.waitingFirst") : t("session.working")}</span>
             </div>
+          )}
+          {awayFromBottom && (
+            <button
+              type="button"
+              className="go-bottom"
+              onClick={() => {
+                const el = scroller.current;
+                if (!el) return;
+                el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+                stick.current = true;
+                setAwayFromBottom(false);
+              }}
+            >
+              <ArrowDown size={13} aria-hidden /> {t("activity.goBottom")}
+            </button>
           )}
         </div>
       ) : (

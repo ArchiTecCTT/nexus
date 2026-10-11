@@ -103,6 +103,14 @@ type Deps = {
   transcriptsDir: string;
 };
 
+/** Questions de confiance dans le dossier, telles qu'affichées par les TUI (espaces parfois supprimés par le rendu). */
+// Codex : « Trust this folder? », première option « Trust and continue » → Entrée.
+// Claude : « Quick safety check… », première option « No, exit » → flèche bas vers « Yes, I trust this folder » puis Entrée.
+const TRUST_PROMPTS: Array<{ re: RegExp; keys: string[] }> = [
+  { re: /Yes,?\s*I\s*trust\s*this\s*folder/i, keys: ["\x1b[B", "\r"] },
+  { re: /Trust\s*this\s*folder\?/i, keys: ["\r"] },
+];
+
 /** Au-delà, seule la fin de l'enregistrement est conservée. */
 const TRANSCRIPT_MAX = 4 * 1024 * 1024;
 
@@ -252,8 +260,28 @@ export class InteractiveSessions {
       }
     };
     const transcriptTimer = setInterval(flushTranscript, 1000);
+    // Question « faire confiance à ce dossier ? » des TUI (Codex, Claude) : l'utilisateur a choisi de lancer cet agent
+    // dans ce projet, Nexus y répond donc (Entrée = première option « faire confiance »). Aucune autre question
+    // (permissions, mode sans confirmation…) n'est jamais répondue à sa place.
+    let tail = "";
+    let trusted = false;
     const onOutput = (d: string) => {
       buffered += d;
+      if (trusted) return;
+      tail = (tail + d.replace(/\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g, "")).slice(-4000);
+      const prompt = TRUST_PROMPTS.find((p) => p.re.test(tail));
+      if (prompt) {
+        trusted = true;
+        prompt.keys.forEach((k, i) =>
+          setTimeout(
+            () => {
+              const live = this.#byTask.get(o.taskId);
+              if (live) this.#d.terminals.write(live.terminalId, k);
+            },
+            400 + i * 300,
+          ),
+        );
+      }
     };
 
     const onExit = (code: number | null, signal?: number) => {

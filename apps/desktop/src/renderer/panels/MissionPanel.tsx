@@ -8,8 +8,8 @@ import { errorText } from "../lib/actions.ts";
 import { useMissionsStore } from "../stores/missions.ts";
 import { useProjectStore } from "../stores/project.ts";
 import { Badge, Button, EmptyState, ErrorNotice, Skeleton } from "../ui/primitives.tsx";
-import { openSession } from "../workbench/dock.ts";
 import type { PanelProps } from "../workbench/DockHost.tsx";
+import { openTaskActivity } from "../lib/task-context.ts";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "var(--fg-subtle)",
@@ -152,7 +152,7 @@ export function MissionPanel({ params }: PanelProps) {
                 .filter((x): x is string => Boolean(x));
               return (
                 <li key={task.taskId}>
-                  <button type="button" className="orch-task" onClick={() => openSession(task.taskId, task.title)}>
+                  <button type="button" className="orch-task" onClick={() => openTaskActivity(task.taskId, task.title)}>
                     <span className="orch-task-dot" style={{ background: STATUS_COLORS[task.status] }} aria-hidden />
                     <span className="min-w-0 flex-1">
                       <span className="orch-task-title">{task.title}</span>

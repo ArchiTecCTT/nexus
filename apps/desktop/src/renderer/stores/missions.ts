@@ -9,6 +9,8 @@ export interface RunEntry {
   key: string;
   runId: string;
   globalSequence?: number;
+  /** Horodatage (ms) : `occurredAt` de l'historique, ou réception pour un événement poussé. */
+  at?: number;
   event: AgentEvent;
 }
 
@@ -174,6 +176,7 @@ export const useMissionsStore = create<MissionsState>()((set, get) => {
             key: entryKey(h.runId, h.event.sequence),
             runId: h.runId,
             globalSequence: h.globalSequence,
+            at: Date.parse(h.occurredAt) || undefined,
             event: h.event,
           }));
           const known = new Set(entries.map((e) => e.key));
@@ -200,7 +203,7 @@ export const useMissionsStore = create<MissionsState>()((set, get) => {
         const prev = s.runs[taskId] ?? emptyStream();
         const key = entryKey(runId, event.sequence);
         if (prev.entries.some((e) => e.key === key)) return s;
-        let entries = [...prev.entries, { key, runId, event }];
+        let entries = [...prev.entries, { key, runId, at: Date.now(), event }];
         let version = prev.version;
         if (entries.length > MAX_ENTRIES) {
           entries = entries.slice(-MAX_ENTRIES);

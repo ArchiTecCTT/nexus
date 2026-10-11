@@ -28,8 +28,9 @@ import { errorText } from "../lib/actions.ts";
 import { mergeFeed, useOrchestraStore } from "../stores/orchestra.ts";
 import { AgentAvatar, agentName, familyOf, type AgentFamily } from "../ui/AgentAvatar.tsx";
 import { Badge, Button, EmptyState, ErrorNotice, Kbd, Skeleton, cx } from "../ui/primitives.tsx";
-import { openSession, openTerminal } from "../workbench/dock.ts";
+import { openTerminal } from "../workbench/dock.ts";
 import type { PanelProps } from "../workbench/DockHost.tsx";
+import { openTaskActivity } from "../lib/task-context.ts";
 
 type Task = OrchestraDetail["tasks"][number];
 
@@ -112,7 +113,7 @@ function TaskList({ detail }: { detail: OrchestraDetail }) {
               <button
                 type="button"
                 className={cx("orch-task", `is-${tone}`)}
-                onClick={() => openSession(task.taskId, task.title)}
+                onClick={() => openTaskActivity(task.taskId, task.title)}
                 title={t("orch.openTask")}
               >
                 <span className={cx("orch-task-dot", `is-${tone}`)} aria-hidden />
