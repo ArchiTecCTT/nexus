@@ -1,0 +1,19 @@
+# Construction reproductible des paquets Linux de Nexus AI (.deb, .rpm, .zip) dans Docker.
+# L'application elle-même est un logiciel de bureau : elle se lance sur la machine, pas dans un conteneur.
+#
+#   docker build -f Dockerfile.release --target export -o dist .
+#
+# Les fichiers produits arrivent dans ./dist (même contenu que la Release GitHub Linux).
+FROM node:24.18.0-bookworm AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fakeroot dpkg rpm python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
+WORKDIR /src
+COPY . .
+RUN pnpm install --frozen-lockfile \
+ && pnpm run generate \
+ && pnpm --filter @nexus/desktop run make
+
+FROM scratch AS export
+COPY --from=build /src/apps/desktop/out/make/ /

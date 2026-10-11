@@ -1,5 +1,6 @@
 import type { ForgeConfig } from "@electron-forge/shared-types";
 import { MakerDeb } from "@electron-forge/maker-deb";
+import { MakerRpm } from "@electron-forge/maker-rpm";
 import { MakerSquirrel } from "@electron-forge/maker-squirrel";
 import { MakerZIP } from "@electron-forge/maker-zip";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
@@ -11,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_EXTERNALS } from "./vite.main.config.mts";
 
+const hasRpmbuild = ["/usr/bin/rpmbuild", "/usr/local/bin/rpmbuild"].some((p) => existsSync(p));
 const rootNodeModules = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "node_modules");
 
 /**
@@ -39,12 +41,17 @@ const config: ForgeConfig = {
     // Le plugin Vite n'embarque pas node_modules : on copie uniquement les modules chargés à l'exécution.
     packageAfterCopy: async (_config, buildPath) => {
       for (const name of runtimeClosure(RUNTIME_EXTERNALS)) {
-        cpSync(join(rootNodeModules, name), join(buildPath, "node_modules", name), { recursive: true, dereference: true });
+        cpSync(join(rootNodeModules, name), join(buildPath, "node_modules", name), {
+          recursive: true,
+          dereference: true,
+        });
       }
     },
   },
-  // RPM (MakerRpm) retiré tant que `rpmbuild` n'est pas installé sur l'hôte de build (installation soumise au propriétaire).
-  makers: [new MakerSquirrel({}), new MakerZIP({}, ["darwin", "linux"]), new MakerDeb({
+  makers: [
+    new MakerSquirrel({}),
+    new MakerZIP({}, ["darwin", "linux", "win32"]),
+    new MakerDeb({
       options: {
         name: "nexus-ai",
         bin: "nexus-ai",
@@ -55,7 +62,23 @@ const config: ForgeConfig = {
         maintainer: "Dayifour <dayifour@users.noreply.github.com>",
         homepage: "https://github.com/Dayifour/nexus",
       },
-    })],
+    }),
+    // .rpm seulement si `rpmbuild` est présent (installé par le workflow de publication ; absent en local).
+    ...(hasRpmbuild
+      ? [
+          new MakerRpm({
+            options: {
+              name: "nexus-ai",
+              bin: "nexus-ai",
+              productName: "Nexus AI",
+              homepage: "https://github.com/Dayifour/nexus",
+              license: "Apache-2.0",
+              categories: ["Development"],
+            },
+          }),
+        ]
+      : []),
+  ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
     new VitePlugin({
