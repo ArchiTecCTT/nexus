@@ -1,0 +1,16 @@
+{
+  "name": "@nexus/usage",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Suivi d'usage (reported / estimated / unavailable), quotas et budgets des agents Nexus AI.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@nexus/contracts": "workspace:*"
+  }
+}
