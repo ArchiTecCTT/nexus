@@ -4,7 +4,6 @@
 // vidé aussitôt et la valeur n'est jamais relue ; seule une coche indique sa présence.
 import type { DeploymentPlan, DeploymentProposal, ProposalStep } from "@nexus/contracts";
 import {
-  ArrowRight,
   Bot,
   Check,
   CircleAlert,
@@ -289,31 +288,24 @@ function ProfileSummary({ plan }: { plan: DeploymentPlan }) {
 
 // --- 2. Propositions ------------------------------------------------------------------------------------------------
 
+/** Placement des composants, en texte : « Front (client) → Vercel ». */
 function PlacementSchema({ proposal, plan }: { proposal: Proposal; plan: DeploymentPlan }) {
   const t = useT();
   return (
-    <div className="placement" aria-label={t("dplan.placement")}>
+    <ul className="placement-list" aria-label={t("dplan.placement")}>
       {proposal.placements.map((p) => {
-        const Icon = ROLE_ICON[p.role];
         const comp = plan.profile.components.find((c) => c.id === p.componentId);
         return (
-          <div key={`${p.componentId}-${p.provider}`} className="placement-row" title={p.why}>
-            <span className={cx("placement-box", `role-${p.role}`)}>
-              <Icon size={13} aria-hidden />
-              <span className="truncate">
-                {t(`dplan.roleShort.${p.role}` as TKey)}
-                {comp && comp.path !== "." && <span className="text-fg-subtle"> · {comp.path}</span>}
-              </span>
-            </span>
-            <ArrowRight size={14} className="placement-arrow" aria-hidden />
-            <span className="placement-host">
-              <span className="truncate">{PROVIDER_LABEL[p.provider]}</span>
-              {p.plan && <span className="text-fg-subtle truncate"> · {p.plan}</span>}
-            </span>
-          </div>
+          <li key={`${p.componentId}-${p.provider}`} className="placement-row" title={p.why}>
+            <span className="font-medium">{t(`dplan.roleShort.${p.role}` as TKey)}</span>
+            {comp && comp.path !== "." && <span className="text-fg-subtle"> ({comp.path})</span>}
+            <span className="text-fg-subtle"> → </span>
+            <span>{PROVIDER_LABEL[p.provider]}</span>
+            {p.plan && <span className="text-fg-subtle"> · {p.plan}</span>}
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 }
 

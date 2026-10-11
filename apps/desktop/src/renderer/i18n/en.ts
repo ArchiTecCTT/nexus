@@ -648,7 +648,7 @@ export const en: Record<keyof typeof fr, string> = {
   "action.command_exec": "Command execution",
   "action.merge_to_main": "Merge to main branch",
 
-  "missions.intro": "For multi-agent work: team, governance, AI plan and task graph.",
+  "missions.intro": "For multi-agent work: team, governance, AI plan and task list.",
   "missions.list": "Missions",
   "missions.new": "New",
   "missions.empty": "No mission.",
@@ -665,7 +665,7 @@ export const en: Record<keyof typeof fr, string> = {
   "missions.run": "Run",
   "missions.started": "Mission started.",
   "missions.noTasks": "No task",
-  "missions.noTasksBody": "Ask for an AI plan or add tasks to see the graph.",
+  "missions.noTasksBody": "Ask for an AI plan or add tasks to see them here.",
   "mission.status.planning": "Planning",
   "mission.status.awaiting_plan_approval": "Plan awaiting approval",
   "mission.status.active": "Active",

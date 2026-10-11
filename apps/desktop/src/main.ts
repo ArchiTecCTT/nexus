@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, shell } from "electron";
 import path from "node:path";
 import started from "electron-squirrel-startup";
 import { IPC_EVENT_CHANNEL, IPC_INVOKE_CHANNEL, IpcPushEvent } from "@nexus/contracts";
@@ -139,6 +139,19 @@ ipcMain.handle(IPC_INVOKE_CHANNEL, async (event, raw) => {
   return dispatchIpc(raw, handlers);
 });
 
+/** Couleurs des boutons de fenêtre, alignées sur la barre de Nexus (--chrome / --fg). */
+function titleBarColors(): { color: string; symbolColor: string; height: number } {
+  const pref = services?.settings.get().theme ?? "dark";
+  const dark = pref === "system" ? nativeTheme.shouldUseDarkColors : pref === "dark";
+  return dark
+    ? { color: "#0d0f15", symbolColor: "#e7e9ef", height: 40 }
+    : { color: "#eef0f4", symbolColor: "#1a1d26", height: 40 };
+}
+function applyTitleBarColors(): void {
+  if (process.platform === "darwin") return;
+  for (const w of BrowserWindow.getAllWindows()) w.setTitleBarOverlay(titleBarColors());
+}
+
 const createWindow = (): BrowserWindow => {
   const mainWindow = new BrowserWindow({
     width: 1280,
@@ -148,6 +161,10 @@ const createWindow = (): BrowserWindow => {
     title: "Nexus AI",
     // Barre de menus masquée (aspect IDE) ; Alt l'affiche.
     autoHideMenuBar: true,
+    // Barre de titre intégrée : pas de barre du système ; les boutons de fenêtre s'affichent dans la barre de Nexus,
+    // aux couleurs du thème (macOS : boutons natifs à gauche).
+    titleBarStyle: "hidden",
+    titleBarOverlay: titleBarColors(),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -173,6 +190,8 @@ const createWindow = (): BrowserWindow => {
 
 void ready.then(() => {
   installAppMenu({ dev: Boolean(devServerUrl) });
+  services?.settings.onChange(() => applyTitleBarColors());
+  nativeTheme.on("updated", () => applyTitleBarColors());
   createWindow();
 
   app.on("activate", () => {

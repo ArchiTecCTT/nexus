@@ -21,7 +21,6 @@ import { toast } from "sonner";
 import { pathForFile } from "../api.ts";
 import { useT } from "../i18n/index.ts";
 import { importArchive, openFolderDialog, openProjectPath, useOpenPathDialog } from "../lib/actions.ts";
-import { AgentAvatar, agentName, familyOf } from "../ui/AgentAvatar.tsx";
 import { useAppStore, type ThemePref } from "../stores/app.ts";
 import { useProjectStore } from "../stores/project.ts";
 import { relativeTime } from "../sidebar/AgentsView.tsx";
@@ -85,7 +84,6 @@ export function Welcome() {
       }}
       onDrop={(e) => void onDrop(e)}
     >
-      <div className="welcome-glow" aria-hidden />
       <header className="welcome-top">
         <div className="flex items-center gap-2">
           <div className="logo-mark" aria-hidden>
@@ -109,12 +107,6 @@ export function Welcome() {
 
       <main className="welcome-main">
         <section className="welcome-hero orch-hero" data-testid="orchestra-hero">
-          <div className="orch-hero-avatars" aria-hidden>
-            {(["claude-cli", "codex-cli", "gemini-cli", "qwen-cli"] as const).map((id, i) => (
-              <AgentAvatar key={id} label={agentName(id)} family={familyOf(id)} size={34} lead={i === 0} />
-            ))}
-            <span className="orch-hero-link" />
-          </div>
           <h1 className="welcome-title">{t("orch.heroTitle")}</h1>
           <p className="welcome-subtitle">{t("orch.heroTagline")}</p>
           <div className="flex flex-wrap justify-center gap-2 mt-4">

@@ -1,16 +1,12 @@
-// Mission avancée (équipe, gouvernance, plan IA) : graphe des tâches (DAG, @xyflow/react) coloré par statut,
-// dépendances en arêtes, et pilotage du plan (planification par le superviseur, acceptation, exécution, annulation).
-import { Background, Controls, MarkerType, ReactFlow, type Edge, type Node } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
+// Mission avancée (équipe, gouvernance, plan IA) : liste des tâches (dépendances indiquées en texte) colorée par statut,
+// et pilotage du plan (planification par le superviseur, acceptation, exécution, annulation).
 import { Ban, CircleCheckBig, Play, RefreshCw, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useT, useTd } from "../i18n/index.ts";
 import { errorText } from "../lib/actions.ts";
-import { useAppStore } from "../stores/app.ts";
 import { useMissionsStore } from "../stores/missions.ts";
 import { useProjectStore } from "../stores/project.ts";
-import type { TaskSummary } from "../types.ts";
 import { Badge, Button, EmptyState, ErrorNotice, Skeleton } from "../ui/primitives.tsx";
 import { openSession } from "../workbench/dock.ts";
 import type { PanelProps } from "../workbench/DockHost.tsx";
@@ -28,36 +24,6 @@ const STATUS_COLORS: Record<string, string> = {
   interrupted: "var(--warning)",
 };
 
-/** Disposition en couches : profondeur = plus long chemin depuis une tâche sans dépendance. */
-function layout(tasks: TaskSummary[]): Map<string, { x: number; y: number }> {
-  const byId = new Map(tasks.map((t) => [t.taskId, t]));
-  const depth = new Map<string, number>();
-  const visit = (id: string, stack: Set<string>): number => {
-    const known = depth.get(id);
-    if (known !== undefined) return known;
-    if (stack.has(id)) return 0;
-    stack.add(id);
-    const task = byId.get(id);
-    const d =
-      task && task.dependsOn.length > 0
-        ? 1 + Math.max(...task.dependsOn.filter((p) => byId.has(p)).map((p) => visit(p, stack)), -1)
-        : 0;
-    stack.delete(id);
-    depth.set(id, d);
-    return d;
-  };
-  for (const t of tasks) visit(t.taskId, new Set());
-  const rows = new Map<number, number>();
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const t of tasks) {
-    const d = depth.get(t.taskId) ?? 0;
-    const r = rows.get(d) ?? 0;
-    rows.set(d, r + 1);
-    pos.set(t.taskId, { x: d * 280, y: r * 110 });
-  }
-  return pos;
-}
-
 export function MissionPanel({ params }: PanelProps) {
   const t = useT();
   const td = useTd();
@@ -69,7 +35,6 @@ export function MissionPanel({ params }: PanelProps) {
   const tasks = useMissionsStore((s) => s.tasks[missionId]);
   const plan = useMissionsStore((s) => s.plans[missionId]);
   const store = useMissionsStore.getState();
-  const theme = useAppStore((s) => s.resolvedTheme);
   const [busy, setBusy] = useState<string>();
 
   useEffect(() => {
@@ -89,37 +54,6 @@ export function MissionPanel({ params }: PanelProps) {
       setBusy(undefined);
     }
   };
-
-  const { nodes, edges } = useMemo(() => {
-    const list = tasks?.data ?? [];
-    const pos = layout(list);
-    const nodes: Node[] = list.map((task) => ({
-      id: task.taskId,
-      position: pos.get(task.taskId) ?? { x: 0, y: 0 },
-      data: {
-        label: (
-          <div className="dag-node" style={{ borderColor: STATUS_COLORS[task.status] }}>
-            <div className="dag-node-title">{task.title}</div>
-            <div className="dag-node-status" style={{ color: STATUS_COLORS[task.status] }}>
-              ● {td("status.", task.status)}
-            </div>
-          </div>
-        ),
-      },
-      style: { padding: 0, border: "none", background: "transparent", width: 230 },
-    }));
-    const edges: Edge[] = list.flatMap((task) =>
-      task.dependsOn.map((dep) => ({
-        id: `${dep}->${task.taskId}`,
-        source: dep,
-        target: task.taskId,
-        animated: task.status === "running",
-        markerEnd: { type: MarkerType.ArrowClosed },
-        style: { stroke: "var(--border-strong)", strokeWidth: 1.5 },
-      })),
-    );
-    return { nodes, edges };
-  }, [tasks?.data, td]);
 
   const fingerprint = plan?.data?.fingerprint;
 
@@ -201,7 +135,7 @@ export function MissionPanel({ params }: PanelProps) {
         <ErrorNotice error={plan?.error} />
         <ErrorNotice error={tasks?.error} />
       </div>
-      <div className="dag-host" data-testid="mission-dag">
+      <div className="scroll-area px-4 pb-4 flex-1" data-testid="mission-tasks">
         {tasks?.loading && !tasks.data && (
           <div className="p-6">
             <Skeleton lines={4} />
@@ -211,21 +145,29 @@ export function MissionPanel({ params }: PanelProps) {
           <EmptyState title={t("missions.noTasks")}>{t("missions.noTasksBody")}</EmptyState>
         )}
         {tasks?.data && tasks.data.length > 0 && (
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            fitView
-            colorMode={theme}
-            nodesConnectable={false}
-            proOptions={{ hideAttribution: true }}
-            onNodeClick={(_e, node) => {
-              const task = tasks.data?.find((x) => x.taskId === node.id);
-              if (task) openSession(task.taskId, task.title);
-            }}
-          >
-            <Background gap={20} size={1} />
-            <Controls showInteractive={false} />
-          </ReactFlow>
+          <ul className="mission-tasks">
+            {tasks.data.map((task) => {
+              const after = task.dependsOn
+                .map((d) => tasks.data?.find((x) => x.taskId === d)?.title)
+                .filter((x): x is string => Boolean(x));
+              return (
+                <li key={task.taskId}>
+                  <button type="button" className="orch-task" onClick={() => openSession(task.taskId, task.title)}>
+                    <span className="orch-task-dot" style={{ background: STATUS_COLORS[task.status] }} aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="orch-task-title">{task.title}</span>
+                      {after.length > 0 && (
+                        <span className="orch-task-meta">{t("orch.after", { tasks: after.join(", ") })}</span>
+                      )}
+                    </span>
+                    <span className="orch-node-status" style={{ color: STATUS_COLORS[task.status] }}>
+                      {td("status.", task.status)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </div>

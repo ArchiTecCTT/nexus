@@ -670,7 +670,7 @@ export const fr = {
   "action.merge_to_main": "Fusion vers la branche principale",
 
   // Missions avancées
-  "missions.intro": "Pour les travaux à plusieurs agents : équipe, gouvernance, plan IA et graphe des tâches.",
+  "missions.intro": "Pour les travaux à plusieurs agents : équipe, gouvernance, plan IA et liste des tâches.",
   "missions.list": "Missions",
   "missions.new": "Nouvelle",
   "missions.empty": "Aucune mission.",
@@ -687,7 +687,7 @@ export const fr = {
   "missions.run": "Lancer",
   "missions.started": "Mission lancée.",
   "missions.noTasks": "Aucune tâche",
-  "missions.noTasksBody": "Demandez un plan IA ou ajoutez des tâches pour voir le graphe.",
+  "missions.noTasksBody": "Demandez un plan IA ou ajoutez des tâches pour les voir ici.",
   "mission.status.planning": "Planification",
   "mission.status.awaiting_plan_approval": "Plan à approuver",
   "mission.status.active": "Active",

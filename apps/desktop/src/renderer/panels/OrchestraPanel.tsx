@@ -25,7 +25,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useT, useTd, type TKey } from "../i18n/index.ts";
 import { errorText } from "../lib/actions.ts";
-import { useAppStore } from "../stores/app.ts";
 import { mergeFeed, useOrchestraStore } from "../stores/orchestra.ts";
 import { AgentAvatar, agentName, familyOf, type AgentFamily } from "../ui/AgentAvatar.tsx";
 import { Badge, Button, EmptyState, ErrorNotice, Kbd, Skeleton, cx } from "../ui/primitives.tsx";
@@ -33,7 +32,6 @@ import { openSession, openTerminal } from "../workbench/dock.ts";
 import type { PanelProps } from "../workbench/DockHost.tsx";
 
 type Task = OrchestraDetail["tasks"][number];
-type Member = OrchestraDetail["members"][number];
 
 const ACTIVE_PHASES = new Set<OrchestraPhase>(["planning", "awaiting_approval", "running", "summarizing"]);
 const RUNNING = new Set(["running", "queued", "waiting_input"]);
@@ -73,11 +71,14 @@ const reviewAccepted = (text: string) =>
 const sameName = (role: string, connectorId: string) => {
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
   const r = norm(role);
-  return !r || r === norm(agentName(connectorId)) || r === norm(connectorId) || norm(agentName(connectorId)).startsWith(r);
+  return (
+    !r || r === norm(agentName(connectorId)) || r === norm(connectorId) || norm(agentName(connectorId)).startsWith(r)
+  );
 };
 
 /** Réattribution d'une tâche après l'échec d'un agent (texte localisé par le main). */
-export const isReassign = (e: OrchestraFeedEntry) => e.kind === "assign" && /reassign|réattribu|réaffect/i.test(e.text);
+export const isReassign = (e: OrchestraFeedEntry) =>
+  e.kind === "assign" && (e.reassigned ?? /reassign|réattribu|réaffect/i.test(e.text));
 const reasonOf = (text: string) => text.match(/\(([^)]+)\)/)?.[1];
 
 // --- Tâches (liste simple) ------------------------------------------------------------------------------------------
@@ -105,9 +106,7 @@ function TaskList({ detail }: { detail: OrchestraDetail }) {
         {detail.tasks.map((task) => {
           const member = detail.members.find((m) => m.agentId === task.agentId);
           const tone = taskTone(task.status);
-          const after = task.dependsOn
-            .map((d) => byRef.get(d)?.title)
-            .filter((x): x is string => Boolean(x));
+          const after = task.dependsOn.map((d) => byRef.get(d)?.title).filter((x): x is string => Boolean(x));
           return (
             <li key={task.taskId}>
               <button
