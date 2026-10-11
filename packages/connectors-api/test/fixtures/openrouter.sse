@@ -1,0 +1,15 @@
+: Fixture construite d'après la documentation publique OpenRouter (streaming compatible OpenAI).
+: NON vérifiée contre l'API réelle.
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fx2","provider":"FixtureProvider","model":"vendor/model-fixture","object":"chat.completion.chunk","created":1700000000,"choices":[{"index":0,"delta":{"role":"assistant","content":"Bonjour"},"finish_reason":null}]}
+
+data: {"id":"gen-fx2","provider":"FixtureProvider","model":"vendor/model-fixture","object":"chat.completion.chunk","created":1700000000,"choices":[{"index":0,"delta":{"role":"assistant","content":", monde é✓"},"finish_reason":"stop"}]}
+
+data: {"id":"gen-fx2","provider":"FixtureProvider","model":"vendor/model-fixture","object":"chat.completion.chunk","created":1700000000,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}}
+
+data: [DONE]
+
