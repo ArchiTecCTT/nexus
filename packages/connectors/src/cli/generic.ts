@@ -41,6 +41,7 @@ export const GENERIC_INVOCATIONS: Record<string, Omit<GenericCliConfig, "signatu
 /** Normaliseur texte : chaque ligne devient un événement `output` ; en cas d'échec, les dernières lignes d'erreur
  * de la CLI sont jointes au message (ex. « connexion requise »), au lieu d'un simple code de sortie. */
 /** Codes de contrôle ANSI (couleurs, curseur) : inutiles dans une vue conversation. */
+// oxlint-disable-next-line no-control-regex -- codes de contrôle ANSI à retirer, voulu
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
 export const stripAnsi = (s: string): string => s.replace(ANSI, "");
 

@@ -148,10 +148,21 @@ test(
     await dialog.waitFor({ state: "hidden" });
     const panel = page.getByTestId("orchestra-panel");
     await panel.waitFor();
+    // Une tâche en cours : un clic montre ce que fait l'agent (flux en direct).
+    const running = panel.locator("button.orch-task.is-running").first();
+    await running.waitFor({ timeout: 900_000 });
+    await running.click();
+    const activity = page.getByTestId("session-panel").last();
+    await activity.waitFor();
+    await activity
+      .locator('[data-testid="activity-working"], [data-testid="session-transcript"] > *')
+      .first()
+      .waitFor({ timeout: 120_000 });
+    await shot("3a-tache-en-cours");
     await panel
       .getByText(/^(Terminé|Échec)$/)
       .first()
-      .waitFor({ timeout: 1_400_000 });
+      .waitFor({ state: "attached", timeout: 1_400_000 });
     await shot("3-orchestre");
     assert.equal(
       (await panel.getByText("Terminé", { exact: true }).count()) > 0,

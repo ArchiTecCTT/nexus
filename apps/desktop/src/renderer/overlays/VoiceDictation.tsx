@@ -185,24 +185,7 @@ export function VoiceDictation({ onInsert }: { onInsert(text: string): void }) {
     <div className="voice" role="group" aria-label={t("voice.panel")}>
       {status.loading && !status.data && <Skeleton lines={1} />}
       <ErrorNotice error={status.error} />
-      {status.data && available.length === 0 && (
-        <div className="notice notice-muted text-[12px]" role="note" data-testid="voice-unavailable">
-          <div>
-            <p>{t("voice.unavailable")}</p>
-            {engines.length > 0 && (
-              <ul>
-                {engines.map((e) => (
-                  <li key={e.id}>
-                    <span className="font-mono">{e.id}</span> ({kindLabel(e)}) — {t("voice.engineUnavailable")}
-                    {e.reason ? ` : ${e.reason}` : ""}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
-
+      {/* Sans moteur de dictée : bouton micro désactivé ; l'info-bulle renvoie aux réglages (pas de bloc technique). */}
       {phase === "idle" && (
         <div className="voice-controls">
           {available.length > 1 && (

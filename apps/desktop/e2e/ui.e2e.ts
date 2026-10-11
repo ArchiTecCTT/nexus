@@ -611,11 +611,10 @@ test("tâche → vue d'activité : attente des dépendances, flux en direct, sé
     .click();
   const tasks = page.getByTestId("mission-tasks");
   await tasks.getByRole("button", { name: /Écrire les tests/ }).click();
-  await page.waitForTimeout(1500);
-  await shot("21a-debug");
   const activity = page.locator("[data-testid=session-panel]:visible");
   await activity.getByTestId("activity-waiting").getByText("En attente de : Préparer l'API").waitFor();
-  await tasks.getByRole("button", { name: /Préparer l'API/ }).click();
+  await page.locator(".tab-inner", { hasText: "Mission E2E activité" }).click();
+  await tasks.getByRole("button", { name: /^Préparer l'API/ }).click();
   await page
     .locator("[data-testid=session-panel]:visible")
     .getByTestId("activity-waiting")
@@ -640,7 +639,7 @@ test("tâche → vue d'activité : attente des dépendances, flux en direct, sé
   );
   const view = page.locator("[data-testid=session-panel]:visible");
   await view.getByText("Je lis le dépôt.").waitFor();
-  await view.getByText("Relance 2").waitFor();
+  await view.getByText("Relance 1").waitFor();
   await view.getByText("Nouvelle tentative en cours.").waitFor();
   await view
     .getByText(/délai dépassé/)

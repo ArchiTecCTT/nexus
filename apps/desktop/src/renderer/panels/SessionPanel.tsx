@@ -462,7 +462,7 @@ export function SessionPanel({ params, api }: PanelProps) {
         </div>
       </header>
 
-      <div className="segmented mx-4 mt-3" role="tablist" aria-label={t("session.views")}>
+      <div className="segmented mx-4 mt-3 self-start" role="tablist" aria-label={t("session.views")}>
         <button
           type="button"
           role="tab"

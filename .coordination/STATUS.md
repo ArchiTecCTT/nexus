@@ -56,3 +56,7 @@ Contrôle global : `npm run check` (lint + typecheck + tests) ; E2E Electron : `
 | Bus MCP de l'équipe (`team_status`, `send_message`, `read_messages`, `ask_lead`) | fait | test protocole MCP réel ; vérifié en réel avec Claude, Codex, OpenCode | Gemini/Qwen : connexion requise ; Hermes : non branché |
 | Déploiement durci (Atlas moindre privilège + CIDR, empreinte SSH vérifiée) | fait | 10 tests deploy-planner | essai réel : comptes requis |
 | Messages et journaux dans la langue choisie | fait | test FR→EN | — |
+| **Parcours réels dans l'application** (`apps/desktop/e2e/real-agents.e2e.ts`, `NEXUS_REAL_AGENTS=1`) | fait | conversation Claude + relance, terminal Codex, terminal Claude, orchestre Claude→Codex jusqu'à « Terminé » avec clic sur une tâche en cours : 4/4 | — |
+| Orchestre résilient | fait | réattribution des tâches d'un agent défaillant (raison affichée), refus des agents non connectés | — |
+| Publication | fait (non exécutée) | `.github/workflows/release.yml` (Linux/Windows/macOS → Release GitHub), `Dockerfile.release`, `docs/RELEASING.md` | premier tag à pousser par le propriétaire |
+| CI GitHub | corrigée (non exécutée) | user namespaces levés sur le runner, bwrap/socat installés, job E2E ajouté, actions v6 | vérifier au prochain push |

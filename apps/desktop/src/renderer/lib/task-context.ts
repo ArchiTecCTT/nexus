@@ -1,5 +1,6 @@
 // Contexte d'une tâche affichée dans la vue d'activité, quelle que soit son origine : session, tâche d'un
 // orchestre ou d'une mission (titre, agent, statut, dépendances, raison d'échec, réattribution).
+import { useMemo } from "react";
 import { useOrchestraStore } from "../stores/orchestra.ts";
 import { useMissionsStore } from "../stores/missions.ts";
 import { useSessionsStore } from "../stores/sessions.ts";
@@ -21,20 +22,24 @@ const DONE = new Set(["completed", "done", "skipped"]);
 
 export function useTaskContext(taskId: string): TaskContext {
   const session = useSessionsStore((s) => s.list.data?.find((x) => x.taskId === taskId));
-  const orch = useOrchestraStore((s) => {
-    for (const [missionId, res] of Object.entries(s.details)) {
+  // Sélecteurs stables (références du store) ; le calcul se fait ensuite, sans créer d'objet dans le sélecteur.
+  const details = useOrchestraStore((s) => s.details);
+  const liveFeeds = useOrchestraStore((s) => s.live);
+  const missionTasks = useMissionsStore((s) => s.tasks);
+  const orch = useMemo(() => {
+    for (const [missionId, res] of Object.entries(details)) {
       const task = res.data?.tasks.find((x) => x.taskId === taskId);
-      if (task) return { detail: res.data, task, live: s.live[missionId] };
+      if (task && res.data) return { detail: res.data, task, live: liveFeeds[missionId] };
     }
     return undefined;
-  });
-  const mission = useMissionsStore((s) => {
-    for (const res of Object.values(s.tasks)) {
+  }, [details, liveFeeds, taskId]);
+  const mission = useMemo(() => {
+    for (const res of Object.values(missionTasks)) {
       const task = res.data?.find((x) => x.taskId === taskId);
       if (task) return { list: res.data ?? [], task };
     }
     return undefined;
-  });
+  }, [missionTasks, taskId]);
 
   let waitingFor: string[] = [];
   let connectorId = session?.connectorId;

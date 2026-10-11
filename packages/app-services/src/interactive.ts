@@ -268,7 +268,8 @@ export class InteractiveSessions {
     const onOutput = (d: string) => {
       buffered += d;
       if (trusted) return;
-      tail = (tail + d.replace(/\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g, "")).slice(-4000);
+      // oxlint-disable-next-line no-control-regex -- codes de contrôle ANSI à retirer, voulu
+      tail = (tail + d.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g, "")).slice(-4000);
       const prompt = TRUST_PROMPTS.find((p) => p.re.test(tail));
       if (prompt) {
         trusted = true;
