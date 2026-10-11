@@ -170,7 +170,8 @@ export class MissionOrchestrator {
       },
       signal,
     )) {
-      if (ev.kind === "output" && ev.channel === "message") text += `${ev.text}\n`;
+      // Messages structurés (Claude, Codex) ou sortie texte (CLI génériques : Hermes, OpenCode…).
+      if (ev.kind === "output" && ev.channel !== "stderr") text += `${ev.text}\n`;
       if (ev.kind === "failed") failure = ev;
     }
     if (failure?.kind === "failed")
@@ -215,7 +216,15 @@ export class MissionOrchestrator {
   async runMission(
     missionId: string,
     actor: Actor,
-    opts: { maxParallel?: number; budgetAvailable?: () => boolean; signal?: AbortSignal } = {},
+    opts: {
+      maxParallel?: number;
+      budgetAvailable?: () => boolean;
+      signal?: AbortSignal;
+      /** Consigne complète d'une tâche (contexte de l'équipe, travail des dépendances…) au lieu de la consigne par défaut. */
+      promptFor?: (taskId: string) => Promise<string>;
+      /** Chaque résultat passe en revue avant de débloquer la suite (chef d'orchestre). */
+      forceReview?: boolean;
+    } = {},
   ): Promise<ScheduleDecision> {
     const running = new Map<string, Promise<unknown>>();
     for (;;) {
@@ -232,8 +241,13 @@ export class MissionOrchestrator {
       });
       for (const id of [...decision.retry, ...decision.start]) {
         if (running.has(id) || this.#runs.isActive(id)) continue;
-        const p = this.#runs
-          .execute(id, actor)
+        const p = (opts.promptFor ? opts.promptFor(id) : Promise.resolve(undefined))
+          .then((prompt) =>
+            this.#runs.execute(id, actor, {
+              ...(prompt !== undefined && { prompt }),
+              ...(opts.forceReview && { forceReview: true }),
+            }),
+          )
           .catch(() => undefined)
           .finally(() => running.delete(id));
         running.set(id, p);

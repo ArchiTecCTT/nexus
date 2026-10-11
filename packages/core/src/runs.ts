@@ -77,6 +77,8 @@ export type ExecutionEnvironment = {
   defaultTimeoutMs?: number;
   /** Les tâches terminées passent en revue humaine avant `completed` (par défaut : oui, pas de merge silencieux). */
   requireReview?: boolean;
+  /** Serveurs MCP à fournir à l'agent pour cette tâche (messagerie de l'Orchestre). */
+  mcpFor?: (taskId: string, connectorId: string) => AgentTaskRequest["mcpServers"];
 };
 
 export type RunOutcome = { runId: string; status: RunStatus; failureCode?: string; resumeMode: ResumeMode };
@@ -143,7 +145,15 @@ export class RunService {
    * `prompt` : consigne de relance (session de suivi). Avec `resume`, la session native du CLI est reprise si possible,
    * et la nouvelle consigne lui est envoyée telle quelle.
    */
-  async execute(taskId: string, actor: Actor, opts: { resume?: boolean; prompt?: string } = {}): Promise<RunOutcome> {
+  /**
+   * `forceReview` : la tâche passe en revue (`waiting_review`) même en mode autonome — utilisé par le chef d'orchestre,
+   * qui relit chaque résultat avant de débloquer les tâches suivantes.
+   */
+  async execute(
+    taskId: string,
+    actor: Actor,
+    opts: { resume?: boolean; prompt?: string; forceReview?: boolean } = {},
+  ): Promise<RunOutcome> {
     if (this.#active.has(taskId)) throw new DomainError("conflict", "Tâche déjà en cours d'exécution");
     const task = await this.#missions.getTask(taskId);
     if (!task.assignedAgentId) throw new DomainError("invalid_request", "Tâche non assignée");
@@ -165,7 +175,7 @@ export class RunService {
       await this.#missions.transition(taskId, "ready", actor);
       status = "ready";
     }
-    if (status === "ready" || status === "interrupted" || status === "failed" || status === "waiting_review") {
+    if (["ready", "interrupted", "failed", "waiting_review", "completed", "cancelled"].includes(status)) {
       await this.#missions.transition(taskId, "queued", actor, opts.resume ? { reason: "resume" } : {});
     } else if (status !== "queued") {
       throw new DomainError("conflict", `Exécution impossible depuis l'état ${status}`);
@@ -195,6 +205,8 @@ export class RunService {
       permissionsPolicyId: mode,
       timeoutMs: this.#env.defaultTimeoutMs ?? 30 * 60_000,
     };
+    const mcp = this.#env.mcpFor?.(taskId, agent.connectorId);
+    if (mcp?.length) req.mcpServers = mcp;
 
     const runId = randomUUID();
     const attempt = task.attempt + 1;
@@ -267,7 +279,9 @@ export class RunService {
         await this.#missions.transition(
           taskId,
           // Mode autonome (choix du propriétaire) : l'agent a travaillé directement dans le projet, pas d'étape de revue.
-          this.#env.requireReview === false || mode === "autonomous" ? "completed" : "waiting_review",
+          !opts.forceReview && (this.#env.requireReview === false || mode === "autonomous")
+            ? "completed"
+            : "waiting_review",
           SYSTEM,
         );
       } else if (status === "cancelled") {
