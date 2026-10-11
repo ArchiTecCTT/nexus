@@ -3,7 +3,7 @@
 // alors l'état « indisponible » propre affiché par l'interface, jamais un plantage.
 // Prérequis : `electron-forge package` (ou build Vite) ; exécuter sous un serveur X (xvfb-run en CI).
 // NEXUS_E2E_SCREENSHOTS=<dossier> enregistre des captures d'écran du parcours.
-import { test, before, after } from "node:test";
+import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -69,6 +69,15 @@ async function runFromPalette(id: string): Promise<void> {
   }
 }
 
+// Un test qui échoue en laissant une boîte de dialogue ouverte ne doit pas faire échouer tous les suivants.
+beforeEach(async () => {
+  if (!page) return;
+  for (let i = 0; i < 3 && (await page.getByRole("dialog").count()) > 0; i++) {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+  }
+});
+
 /** Commandes à effets externes (boîtes natives, fermeture du projet, langue) : non exécutées en boucle. */
 const SKIP_COMMANDS = new Set(["openFolder", "importArchive", "exportProject", "closeProject", "lang.toggle"]);
 
@@ -76,7 +85,12 @@ before(async () => {
   app = await electron.launch({
     args: [appDir],
     cwd: appDir,
-    env: { ...process.env, NEXUS_USER_DATA_DIR: join(dataDir, "userdata") },
+    // NEXUS_E2E_PATH : PATH de l'application (ex. « /usr/bin:/bin » pour reproduire un runner CI sans agent installé).
+    env: {
+      ...process.env,
+      NEXUS_USER_DATA_DIR: join(dataDir, "userdata"),
+      ...(process.env.NEXUS_E2E_PATH && { PATH: process.env.NEXUS_E2E_PATH }),
+    },
   });
   page = await app.firstWindow();
   page.on("pageerror", (e) => pageErrors.push(e.message));
@@ -469,7 +483,12 @@ test("orchestre : dialogue (chef, équipe et spécialités, mode, autonomie) et 
   await page.getByRole("button", { name: "Orchestre", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Nouvel orchestre" });
   await dialog.waitFor();
-  await dialog.getByRole("radiogroup", { name: "Chef d'orchestre" }).waitFor();
+  // Avec des agents détectés : choix du chef ; sans agent (runner CI) : message explicite à la place.
+  await dialog
+    .getByRole("radiogroup", { name: "Chef d'orchestre" })
+    .or(dialog.getByText(/Aucun agent détecté|Aucun agent/))
+    .first()
+    .waitFor();
   await dialog.getByText("Messagerie directe entre agents indisponible en sandbox").waitFor();
   await dialog.getByRole("radio", { name: "Je valide le plan" }).waitFor();
   // Spécialités affichées pour les agents détectés (si Claude/Codex sont installés).
