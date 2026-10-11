@@ -11,3 +11,6 @@ packages/*/src/generated/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Plans locaux produits par les agents
+.hermes/
