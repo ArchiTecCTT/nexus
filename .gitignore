@@ -1,0 +1,13 @@
+node_modules/
+.vite/
+out/
+.DS_Store
+*.log
+coverage/
+# Client Prisma généré (npm run generate)
+packages/*/src/generated/
+# Bases locales de développement et de test
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

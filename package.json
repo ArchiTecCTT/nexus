@@ -1,0 +1,35 @@
+{
+  "name": "nexus-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nexus AI — atelier local d’orchestration d’agents.",
+  "scripts": {
+    "generate": "pnpm -r --if-present run generate",
+    "start": "pnpm --filter @nexus/desktop run start",
+    "test": "pnpm run generate && node --test \"packages/*/test/**/*.test.ts\" && pnpm --filter @nexus/desktop run test",
+    "test:coverage": "node --test --experimental-test-coverage \"packages/*/test/**/*.test.ts\"",
+    "typecheck": "pnpm run generate && tsc --noEmit -p tsconfig.json && pnpm --filter @nexus/desktop run typecheck",
+    "lint": "oxlint packages apps/desktop/src apps/desktop/e2e apps/desktop/tests tests spikes && oxfmt --check --ignore-path .gitignore packages apps/desktop/src apps/desktop/e2e apps/desktop/tests",
+    "lint:fix": "oxlint --fix packages apps/desktop/src apps/desktop/e2e apps/desktop/tests tests spikes && oxfmt --write --ignore-path .gitignore packages apps/desktop/src apps/desktop/e2e apps/desktop/tests",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm test",
+    "test:spikes": "node --test \"tests/security/**/*.test.mjs\"",
+    "licenses": "node scripts/license-audit.mjs"
+  },
+  "engines": {
+    "node": ">=24.18.0 <25",
+    "pnpm": ">=11.10.0 <12"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "typescript": "6.0.3"
+  },
+  "license": "Apache-2.0",
+  "author": "Dayifour (https://github.com/Dayifour)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dayifour/nexus.git"
+  },
+  "packageManager": "pnpm@11.10.0"
+}
