@@ -2,7 +2,10 @@
 
 > Un atelier local de développement logiciel, orienté agents de code, pour piloter des équipes d’agents IA de façon observable, persistante et sécurisée.
 
-**Statut : spécification en cours — aucune application n’est encore implémentée.**
+**Statut : préversion 0.1.0, Linux uniquement, interne (non publiée).** Les tickets T-000 à T-025 sont implémentés et testés sur Ubuntu
+(paquet `.deb` compris) ; les intégrations GitHub, Vercel, Codex et API par clé sont validées sur fixtures ; Windows/macOS n'ont ni isolation
+vérifiée ni installateur testé, et la publication publique (T-026) attend les décisions du propriétaire (licence, marque).
+Détail : [`.coordination/STATUS.md`](.coordination/STATUS.md) et [notes de version](docs/RELEASE_NOTES.md).
 
 Nexus AI vise à réunir dans une application desktop les agents accessibles en CLI (Claude Code, Codex, Gemini CLI, Hermes et futurs connecteurs) et les modèles accessibles par API (OpenAI, Anthropic, Google AI Studio, OpenRouter, serveurs locaux, etc.).
 
@@ -51,6 +54,16 @@ Orchestrateur local
 
 Le renderer n’a pas d’accès Node direct. Les entrées IPC sont validées, les clés API restent hors de l’interface, et les processus externes sont lancés par un runner contrôlé.
 
+## Démarrer
+
+```bash
+pnpm install --frozen-lockfile && pnpm run generate
+pnpm run check      # lint, typecheck, tests
+npm start          # application en développement
+```
+
+Guide complet : [installation (FR)](docs/runbooks/installation.md) · [installation (EN)](docs/runbooks/installation.en.md).
+
 ## Feuille de route
 
 Le développement est organisé en six phases :
@@ -76,6 +89,9 @@ La documentation est la source de vérité du projet à ce stade.
 - [Décisions et priorités](docs/GOUVERNANCE/decisions_et_priorites.md)
 - [Plan de développement](docs/ROADMAP/plan_developpement.md)
 - [Tickets de développement](docs/TICKETS/)
+- [ADR](docs/adr/) : runtime et sandbox (001, 003), monorepo et persistance (002)
+- [Modèle de menace](docs/threat-model/README.md) · [Matrice d'acceptation](docs/testing/matrice-acceptation.md)
+- [Licences des dépendances](docs/licences/AUDIT.md) · [Sécurité](SECURITY.md) · [Contribuer](CONTRIBUTING.md)
 
 ## Contribution
 
@@ -86,3 +102,4 @@ Une contribution doit indiquer son ticket, les fichiers modifiés, les tests ex�
 ## Licence
 
 La licence n’est pas encore ajoutée au dépôt. Apache-2.0 est actuellement la recommandation documentaire, sous réserve de validation finale du propriétaire du projet.
+Le texte et une NOTICE sont prêts dans [`docs/licences/`](docs/licences/) ; l’audit des dépendances embarquées ne relève aucune licence incompatible.

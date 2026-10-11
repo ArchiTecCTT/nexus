@@ -1,0 +1,9 @@
+Nexus AI
+Copyright 2026 Dayifour (https://github.com/Dayifour)
+
+Ce produit est distribué sous la licence Apache 2.0 (voir LICENSE).
+Il inclut des logiciels tiers distribués sous leurs propres licences ; l'inventaire complet est produit par
+`npm run licenses` (docs/licences/THIRD_PARTY.md).
+
+Mention particulière : elkjs (Eclipse Public License 2.0), embarqué sans modification via Mermaid ;
+code source disponible à https://github.com/kieler/elkjs.
