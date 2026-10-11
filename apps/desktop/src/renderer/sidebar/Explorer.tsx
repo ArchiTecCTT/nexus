@@ -13,11 +13,12 @@ import {
   SquareTerminal,
   Trash,
   Columns2,
+  LocateFixed,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useT } from "../i18n/index.ts";
-import { errorText } from "../lib/actions.ts";
+import { errorText, moveEntry, revealActiveFile } from "../lib/actions.ts";
 import { FileIcon, FolderIcon } from "../lib/file-icons.tsx";
 import { joinPath, parentOf, useFilesStore } from "../stores/files.ts";
 import { useProjectStore } from "../stores/project.ts";
@@ -33,6 +34,7 @@ type Row =
   | { type: "error"; dir: string; depth: number };
 
 const NAME_RE = /^[^/\\\0]{1,255}$/;
+const DND_TYPE = "application/x-nexus-path";
 
 function InlineInput({
   initial,
@@ -94,6 +96,8 @@ export function Explorer() {
   const watching = useFilesStore((s) => s.watching);
   const store = useFilesStore.getState();
   const treeRef = useRef<HTMLDivElement>(null);
+  /** Dossier survolé pendant un glisser-déposer interne ("" = racine). */
+  const [dropTarget, setDropTarget] = useState<string | undefined>();
 
   const rows = useMemo(() => {
     const out: Row[] = [];
@@ -368,11 +372,39 @@ export function Explorer() {
             aria-selected={selected === entry.path}
             aria-expanded={isDir ? open : undefined}
             data-path={entry.path}
-            className={cx("tree-row", selected === entry.path && "is-selected", entry.protected && "is-protected")}
+            className={cx(
+              "tree-row",
+              selected === entry.path && "is-selected",
+              entry.protected && "is-protected",
+              dropTarget !== undefined &&
+                (dropTarget === entry.path || (dropTarget !== "" && entry.path.startsWith(`${dropTarget}/`))) &&
+                "is-drop-target",
+            )}
             style={{ paddingLeft: 8 + depth * 14 }}
             onClick={() => activate(entry, false)}
             onDoubleClick={() => !isDir && activate(entry, true)}
             onContextMenu={() => store.select(entry.path)}
+            draggable={!entry.protected}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(DND_TYPE, entry.path);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes(DND_TYPE)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = "move";
+              setDropTarget(isDir ? entry.path : parentOf(entry.path));
+            }}
+            onDragLeave={() => setDropTarget(undefined)}
+            onDrop={(e) => {
+              const from = e.dataTransfer.getData(DND_TYPE);
+              setDropTarget(undefined);
+              if (!from) return;
+              e.preventDefault();
+              e.stopPropagation();
+              void moveEntry(from, isDir ? entry.path : parentOf(entry.path));
+            }}
             title={entry.protected ? t("explorer.protectedHint") : entry.path}
           >
             <span className={cx("tree-chevron", open && "is-open")}>
@@ -395,11 +427,14 @@ export function Explorer() {
       <SectionTitle
         actions={
           <>
-            <IconButton size="sm" label={t("cmd.newFile")} onClick={() => createIn("", "file")}>
+            <IconButton size="sm" label={t("cmd.newFile")} onClick={() => store.startCreate("file")}>
               <FilePlus size={14} />
             </IconButton>
-            <IconButton size="sm" label={t("cmd.newFolder")} onClick={() => createIn("", "directory")}>
+            <IconButton size="sm" label={t("cmd.newFolder")} onClick={() => store.startCreate("directory")}>
               <FolderPlus size={14} />
+            </IconButton>
+            <IconButton size="sm" label={t("cmd.revealActive")} onClick={() => revealActiveFile()}>
+              <LocateFixed size={13} />
             </IconButton>
             <IconButton
               size="sm"
@@ -424,12 +459,27 @@ export function Explorer() {
         <CM.Trigger asChild>
           <div
             ref={treeRef}
-            className="tree scroll-area"
+            className={cx("tree scroll-area", dropTarget === "" && "is-drop-root")}
             role="tree"
             tabIndex={0}
             aria-label={t("explorer.tree")}
             data-testid="explorer-tree"
             onKeyDown={onKeyDown}
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes(DND_TYPE)) return;
+              e.preventDefault();
+              setDropTarget("");
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget === e.target) setDropTarget(undefined);
+            }}
+            onDrop={(e) => {
+              const from = e.dataTransfer.getData(DND_TYPE);
+              setDropTarget(undefined);
+              if (!from) return;
+              e.preventDefault();
+              void moveEntry(from, "");
+            }}
             onFocus={() => {
               if (!selected && entries[0]) store.select(entries[0].entry.path);
             }}
@@ -438,7 +488,8 @@ export function Explorer() {
             {children[""]?.data?.length === 0 && !inline && (
               <p className="px-4 py-3 text-[12.5px] text-fg-subtle">{t("explorer.empty")}</p>
             )}
-            <div className="min-h-10 flex-1" />
+            {/* Clic dans le vide : plus de sélection (les créations vont alors à la racine, comme dans VS Code). */}
+            <div className="min-h-10 flex-1" onClick={() => store.select(undefined)} aria-hidden />
           </div>
         </CM.Trigger>
         {menuFor(undefined)}

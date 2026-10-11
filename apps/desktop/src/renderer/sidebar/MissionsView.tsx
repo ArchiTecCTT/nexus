@@ -1,6 +1,6 @@
 // Missions avancées (secondaires) : missions multi-agents avec équipe et gouvernance, plus les accès aux équipes,
-// approbations, architecture et publication. Le parcours simple reste la session d'agent.
-import { ChevronDown, ChevronRight, ListChecks, Network, Plus, Rocket, ShieldCheck, Users } from "lucide-react";
+// approbations, déploiement, consommation et publication. Le parcours simple reste la session d'agent.
+import { ChevronDown, ChevronRight, CloudUpload, Gauge, Network, Plus, Rocket, ShieldCheck, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useT, useTd } from "../i18n/index.ts";
@@ -55,7 +55,8 @@ export function MissionsView() {
   const links: Array<[string, typeof Users, () => void, number?]> = [
     [t("view.teams"), Users, () => openView("teams")],
     [t("view.approvals"), ShieldCheck, () => openView("approvals"), pending],
-    [t("view.architecture"), ListChecks, () => openView("architecture")],
+    [t("view.deployment"), CloudUpload, () => openView("deployment")],
+    [t("view.usage"), Gauge, () => openView("usage")],
     [t("view.delivery"), Rocket, () => openView("delivery")],
   ];
 

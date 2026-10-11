@@ -25,6 +25,7 @@ import type { AppSettings, SessionMode } from "../types.ts";
 import { confirmAction } from "../ui/dialog.tsx";
 import { Badge, Button, ErrorNotice, IconButton, Skeleton, cx } from "../ui/primitives.tsx";
 import type { PanelProps } from "../workbench/DockHost.tsx";
+import { agentName } from "../ui/AgentAvatar.tsx";
 
 // Tableau vide stable : un `?? []` dans un sélecteur Zustand renverrait un nouveau tableau à chaque rendu (boucle infinie).
 const NO_SECRETS: never[] = [];
@@ -151,7 +152,10 @@ function Agents() {
           <tbody>
             {inventory.data.map((p) => (
               <tr key={p.connectorId}>
-                <td className="font-mono">{p.connectorId}</td>
+                <td title={p.connectorId}>
+                  {agentName(p.connectorId)}{" "}
+                  <span className="font-mono text-fg-subtle text-[11px]">{p.connectorId}</span>
+                </td>
                 <td>
                   {p.installed ? (
                     <Badge tone="success">{t("common.yes")}</Badge>

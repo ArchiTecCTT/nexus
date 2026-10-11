@@ -6,6 +6,7 @@ import { AppServices, createAppHandlers, ExposedError } from "@nexus/app-service
 import { dispatchIpc, IpcHandlerError, type IpcHandlers } from "./main/ipc-dispatch.ts";
 import { safeStorageCipher } from "./main/safe-storage-cipher.ts";
 import { hardenApp, isTrustedAppUrl } from "./main/security.ts";
+import { installAppMenu } from "./main/app-menu.ts";
 
 if (started) {
   app.quit();
@@ -145,6 +146,8 @@ const createWindow = (): BrowserWindow => {
     minWidth: 960,
     minHeight: 640,
     title: "Nexus AI",
+    // Barre de menus masquée (aspect IDE) ; Alt l'affiche.
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -169,6 +172,7 @@ const createWindow = (): BrowserWindow => {
 };
 
 void ready.then(() => {
+  installAppMenu({ dev: Boolean(devServerUrl) });
   createWindow();
 
   app.on("activate", () => {

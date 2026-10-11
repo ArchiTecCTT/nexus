@@ -21,7 +21,6 @@ export type SecretMetadata = IpcResponse<"secrets.list">[number];
 export type FileEntry = IpcResponse<"files.list">[number];
 export type FileContent = IpcResponse<"files.read">;
 export type GitStatus = IpcResponse<"git.status">;
-export type Diagram = IpcResponse<"diagrams.generate">;
 export type UsageSummary = IpcResponse<"usage.summary">;
 
 /** Donnée chargée depuis le main : valeur, erreur éventuelle et indicateur de chargement. */

@@ -7,6 +7,7 @@ import { useEditorsStore } from "./editors.ts";
 import { useFilesStore } from "./files.ts";
 import { useGitStore } from "./git.ts";
 import { useSessionsStore } from "./sessions.ts";
+import { useOrchestraStore } from "./orchestra.ts";
 import { done, failed, pending } from "./util.ts";
 
 /** Remise à zéro synchrone des états liés au projet, AVANT le montage du plan de travail du nouveau projet. */
@@ -15,6 +16,7 @@ function resetProjectStores(projectId: string | undefined): void {
   useEditorsStore.getState().reset(projectId);
   useGitStore.getState().reset(projectId);
   useSessionsStore.getState().reset(projectId);
+  useOrchestraStore.getState().reset(projectId);
 }
 
 interface ProjectState {
@@ -69,7 +71,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         const existing = (await call("projects.list", {})).find((p) => trimSlash(p.rootPath) === path);
         project =
           existing ??
-          (await call("projects.create", { name: baseName(path).slice(0, 200) || "projet", rootPath: path }));
+          (await call("projects.create", { name: baseName(path).slice(0, 200) || "project", rootPath: path }));
       }
       get().openProject(project);
       return project;

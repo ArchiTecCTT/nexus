@@ -66,6 +66,9 @@ function asPushEvent(raw: unknown): IpcPushEvent | undefined {
     return raw as IpcPushEvent;
   }
   if (e.type === "navigate" && typeof e.taskId === "string") return raw as IpcPushEvent;
+  if (e.type === "orchestra" && typeof e.missionId === "string" && e.entry && typeof e.entry === "object") {
+    return raw as IpcPushEvent;
+  }
   if (
     e.type === "deploy-log" &&
     typeof e.projectId === "string" &&

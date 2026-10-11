@@ -9,7 +9,7 @@ import { done, failed, pending, readJsonPref, readPref, writeJsonPref, writePref
 
 export type Lang = "fr" | "en";
 export type ThemePref = "dark" | "light" | "system";
-export type SidebarView = "explorer" | "search" | "scm" | "agents" | "missions";
+export type SidebarView = "orchestra" | "explorer" | "search" | "scm" | "agents" | "missions";
 
 interface UiPrefs {
   sidebarWidth: number;
@@ -57,6 +57,13 @@ interface AppState {
 
   showView(view: SidebarView): void;
   toggleSidebar(force?: boolean): void;
+  /** Mode zen (Ctrl+K Z) : barres d'activité, latérale et d'état masquées. */
+  zen: boolean;
+  shortcutsDialogOpen: boolean;
+  orchestraDialogOpen: boolean;
+  setOrchestraDialogOpen(open: boolean): void;
+  setShortcutsDialogOpen(open: boolean): void;
+  setZen(on: boolean): void;
   setSidebarWidth(width: number): void;
   setPaletteOpen(open: boolean): void;
   setQuickOpenOpen(open: boolean): void;
@@ -97,6 +104,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   sidebarView: storedUi.view,
   sidebarVisible: storedUi.sidebarVisible,
+  zen: false,
+  shortcutsDialogOpen: false,
+  orchestraDialogOpen: false,
+  setOrchestraDialogOpen(open) {
+    set({ orchestraDialogOpen: open });
+  },
+  setShortcutsDialogOpen(open) {
+    set({ shortcutsDialogOpen: open });
+  },
+  setZen(on) {
+    set({ zen: on });
+  },
   sidebarWidth: Math.min(640, Math.max(180, storedUi.sidebarWidth)),
   paletteOpen: false,
   quickOpenOpen: false,

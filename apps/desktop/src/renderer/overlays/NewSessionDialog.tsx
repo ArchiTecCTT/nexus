@@ -12,6 +12,8 @@ import { NON_AGENT_TOOLS, type SessionMode } from "../types.ts";
 import { Button, ErrorNotice, Kbd, Skeleton, cx } from "../ui/primitives.tsx";
 import { openAgentTerminal, openSession, openSideBySide } from "../workbench/dock.ts";
 import { VoiceDictation } from "./VoiceDictation.tsx";
+import { agentName } from "../ui/AgentAvatar.tsx";
+import { authHelp } from "../ui/AgentChip.tsx";
 
 const MODES: Array<{ id: SessionMode; icon: typeof Zap }> = [
   { id: "autonomous", icon: Zap },
@@ -61,10 +63,10 @@ export function NewSessionDialog() {
       .filter((p) => p.installed && !NON_AGENT_TOOLS.has(p.connectorId))
       .map((p) => ({
         id: p.connectorId,
-        label: p.connectorId,
+        label: agentName(p.connectorId),
         detail: p.version,
         kind: "cli",
-        ...(p.authenticated === false && { warn: t("newSession.notAuthenticated") }),
+        ...(p.authenticated === false && { warn: authHelp(t, p.connectorId) }),
       }));
     for (const c of settings?.apiConnectors ?? []) {
       if (c.id && !list.some((a) => a.id === c.id))
@@ -83,7 +85,9 @@ export function NewSessionDialog() {
   }, [open, settings?.defaultMode]);
 
   useEffect(() => {
-    if (!agent && agents[0]) setAgent(agents[0].id);
+    // Premier agent connecté par défaut ; un agent non connecté n'est jamais présélectionné.
+    const usable = agents.filter((a) => !a.warn);
+    if ((!agent || agents.find((a) => a.id === agent)?.warn) && usable[0]) setAgent(usable[0].id);
   }, [agents, agent]);
 
   // TUI interactive par défaut pour les agents qui en ont une ; Conversation reste au choix.
@@ -108,7 +112,7 @@ export function NewSessionDialog() {
   };
 
   const submitMany = async () => {
-    const finalTitle = (title.trim() || prompt.trim().split("\n")[0] || "Comparaison").slice(0, 120);
+    const finalTitle = (title.trim() || prompt.trim().split("\n")[0] || t("newSession.compare")).slice(0, 120);
     const results = await startMany({
       connectorIds: picks,
       mode: mode === "autonomous" ? "supervised" : mode,
@@ -119,7 +123,7 @@ export function NewSessionDialog() {
       rows: 30,
     });
     for (const r of results)
-      if (r.error || !r.taskId) toast.error(`${r.connectorId} : ${r.error ?? t("err.internal_error")}`);
+      if (r.error || !r.taskId) toast.error(`${agentName(r.connectorId)} : ${r.error ?? t("err.internal_error")}`);
     const ok = results.filter((r): r is typeof r & { taskId: string } => Boolean(r.taskId));
     if (ok.length === 0) return;
     setOpen(false);
@@ -128,7 +132,7 @@ export function NewSessionDialog() {
     openSideBySide(
       ok.map((r) => ({
         taskId: r.taskId,
-        title: `${r.connectorId} · ${finalTitle}`.slice(0, 120),
+        title: `${agentName(r.connectorId)} · ${finalTitle}`.slice(0, 120),
         ...(interactive && r.terminalId && { terminalId: r.terminalId }),
         ...(r.workspacePath && { cwd: r.workspacePath }),
       })),
@@ -158,7 +162,15 @@ export function NewSessionDialog() {
         setOpen(false);
         setPrompt("");
         setTitle("");
-        openAgentTerminal({ terminalId: r.terminalId, title: finalTitle, cwd: r.workspacePath, taskId: r.taskId });
+        // Panneau de l'agent dans la zone d'édition, son terminal (TUI) dans le panneau bas, focalisé.
+        openSession(r.taskId, finalTitle);
+        openAgentTerminal({
+          terminalId: r.terminalId,
+          title: finalTitle,
+          cwd: r.workspacePath,
+          taskId: r.taskId,
+          agent: agentName(connectorId),
+        });
         return;
       }
       const taskId = await start({ connectorId, prompt: prompt.trim(), mode, title: finalTitle });
@@ -223,7 +235,13 @@ export function NewSessionDialog() {
                         type="button"
                         role={compare ? "checkbox" : "radio"}
                         aria-checked={compare ? picks.includes(a.id) : agent === a.id}
-                        className={cx("agent-card", (compare ? picks.includes(a.id) : agent === a.id) && "is-selected")}
+                        className={cx(
+                          "agent-card",
+                          (compare ? picks.includes(a.id) : agent === a.id) && "is-selected",
+                          a.warn && "is-unavailable",
+                        )}
+                        disabled={Boolean(a.warn)}
+                        aria-describedby={a.warn ? `agent-help-${a.id}` : undefined}
                         onClick={() => {
                           setAgent(a.id);
                           if (compare)
@@ -231,17 +249,21 @@ export function NewSessionDialog() {
                               p.includes(a.id) ? p.filter((x) => x !== a.id) : p.length < 6 ? [...p, a.id] : p,
                             );
                         }}
-                        title={a.warn}
                       >
                         <Bot size={15} aria-hidden />
                         <span className="min-w-0">
                           <span className="block truncate font-medium">{a.label}</span>
-                          <span className="block truncate text-[11px] text-fg-subtle">
-                            {a.kind === "api" ? "API · " : "CLI · "}
-                            {a.detail ?? ""}
-                          </span>
+                          {a.warn ? (
+                            <span id={`agent-help-${a.id}`} className="block text-[11px] text-warning leading-snug">
+                              {t("agents.notConnected")} — {a.warn}
+                            </span>
+                          ) : (
+                            <span className="block truncate text-[11px] text-fg-subtle">
+                              {a.kind === "api" ? "API · " : "CLI · "}
+                              {a.detail ?? ""}
+                            </span>
+                          )}
                         </span>
-                        {a.warn && <span className="status-dot dot-warning ml-auto" aria-label={a.warn} />}
                       </button>
                     ))}
                   </div>

@@ -53,6 +53,7 @@ export function CommandPalette() {
                 <Command.Item
                   key={c.id}
                   value={`${title} ${c.id}`}
+                  data-command={c.id}
                   className="cmdk-item"
                   onSelect={() => {
                     setOpen(false);

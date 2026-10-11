@@ -21,7 +21,9 @@ import {
 import { create } from "zustand";
 import { tNow } from "../i18n/index.ts";
 import { useEditorsStore } from "../stores/editors.ts";
-import { readJsonPref, writeJsonPref } from "../stores/util.ts";
+import { terminalPanels } from "../stores/terminals.ts";
+import { readJsonPref, readPref, writeJsonPref, writePref } from "../stores/util.ts";
+import { toast } from "sonner";
 
 export type PanelComponent =
   | "editor"
@@ -30,15 +32,40 @@ export type PanelComponent =
   | "session"
   | "mission"
   | "settings"
-  | "architecture"
+  | "usage"
+  | "deployment"
+  | "shortcuts"
+  | "agentOutput"
+  | "orchestra"
+  | "log"
   | "delivery"
   | "approvals"
   | "teams";
+
+const KNOWN_COMPONENTS = new Set<string>([
+  "editor",
+  "diff",
+  "terminal",
+  "session",
+  "mission",
+  "settings",
+  "usage",
+  "deployment",
+  "shortcuts",
+  "agentOutput",
+  "orchestra",
+  "log",
+  "delivery",
+  "approvals",
+  "teams",
+] satisfies PanelComponent[]);
 
 export interface PanelParams {
   path?: string;
   preview?: boolean;
   protected?: boolean;
+  /** Éditeur sans titre (Ctrl+N) : `path` est alors une clé interne « untitled:N ». */
+  untitled?: boolean;
   taskId?: string;
   missionId?: string;
   cwd?: string;
@@ -150,8 +177,15 @@ export const useDockState = create<{
   activePanelId?: string;
   bottomVisible: boolean;
   maximized: boolean;
+  bottomMaximized: boolean;
   panelCount: number;
-}>()(() => ({ activePanelId: undefined, bottomVisible: false, maximized: false, panelCount: 0 }));
+}>()(() => ({
+  activePanelId: undefined,
+  bottomVisible: false,
+  maximized: false,
+  bottomMaximized: false,
+  panelCount: 0,
+}));
 
 export function getDock(): DockviewApi | undefined {
   return api;
@@ -168,6 +202,19 @@ function mainGroup(): DockviewGroupPanel | undefined {
   return api.groups.find((g) => !isEdge(g) && g.api.location.type === "grid");
 }
 
+/**
+ * Onglets du panneau bas EN HAUT, comme dans VS Code. dockview remet l'en-tête d'un groupe de bord du côté du bord
+ * (donc en bas) à la restauration d'une disposition : on le corrige à chaque accès et après chaque restauration.
+ */
+function ensureTopHeader(): void {
+  const edge = api?.getEdgeGroup("bottom");
+  try {
+    if (edge && edge.getHeaderPosition() !== "top") edge.setHeaderPosition("top");
+  } catch {
+    // groupe en cours d'initialisation
+  }
+}
+
 function bottomGroup(create: boolean): DockviewGroupPanel | undefined {
   if (!api) return undefined;
   let edge = api.getEdgeGroup("bottom");
@@ -181,6 +228,7 @@ function bottomGroup(create: boolean): DockviewGroupPanel | undefined {
     }
   }
   if (!edge) return undefined;
+  ensureTopHeader();
   return api.groups.find((g) => g.id === edge.id) ?? (api.getGroup(edge.id) as DockviewGroupPanel | undefined);
 }
 
@@ -203,6 +251,15 @@ function syncDockState(): void {
 // --- Persistance par projet -------------------------------------------------------------------------------------
 
 const layoutKey = (projectId: string) => `nexus.layout.${projectId}`;
+/** Version du format de disposition : une disposition plus ancienne (ou illisible) est remplacée par celle par défaut. */
+const LAYOUT_VERSION = 3;
+interface StoredLayout {
+  v: number;
+  layout: SerializedDockview;
+}
+/** Contenus propres au panneau bas (terminaux, sortie de l'agent, journal) : jamais dans la zone d'édition par défaut. */
+const UTILITY_COMPONENTS = new Set<string>(["settings", "delivery", "usage", "shortcuts", "approvals", "teams"]);
+export const BOTTOM_COMPONENTS = new Set<string>(["terminal", "agentOutput", "log"]);
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
 function sanitizeLayout(layout: SerializedDockview): SerializedDockview {
@@ -222,7 +279,10 @@ function scheduleSave(): void {
   saveTimer = setTimeout(() => {
     if (!api || !currentProjectId) return;
     try {
-      writeJsonPref(layoutKey(currentProjectId), sanitizeLayout(api.toJSON()));
+      writeJsonPref(layoutKey(currentProjectId), {
+        v: LAYOUT_VERSION,
+        layout: sanitizeLayout(api.toJSON()),
+      } satisfies StoredLayout);
     } catch {
       // Disposition non sérialisable : ignorée.
     }
@@ -283,10 +343,34 @@ export function tabMenuItems(panelId: string): MenuEntry[] {
 
 // --- Montage ---------------------------------------------------------------------------------------------------
 
+// --- Historique : onglets récemment utilisés (Ctrl+Tab) et récemment fermés (Ctrl+Maj+T) -----------------------
+
+/** Identifiants des panneaux, du plus récemment activé au plus ancien. */
+let mru: string[] = [];
+/** Parcours Ctrl+Tab en cours (tant que la touche Ctrl/Cmd reste enfoncée) : ordre figé au début du parcours. */
+let mruCycle: { order: string[]; index: number } | undefined;
+interface ClosedPanel {
+  id: string;
+  component: PanelComponent;
+  title: string;
+  params: PanelParams;
+}
+let closedStack: ClosedPanel[] = [];
+/** Fermetures en masse (changement de projet, nettoyage) : non mémorisées pour Ctrl+Maj+T. */
+let recordClosed = true;
+
+function touchMru(id: string | undefined): void {
+  if (!id || mruCycle) return;
+  mru = [id, ...mru.filter((x) => x !== id)].slice(0, 100);
+}
+
 export function mountDock(element: HTMLElement, projectId: string): () => void {
   api?.dispose();
   currentProjectId = projectId;
   lastMainGroupId = undefined;
+  mru = [];
+  mruCycle = undefined;
+  closedStack = [];
   const dock = createDockview(element, {
     theme: { ...themeDark, name: "nexus", className: "dockview-theme-nexus" },
     createComponent: ({ name }) => new ReactPart("content", name as PanelComponent),
@@ -297,7 +381,7 @@ export function mountDock(element: HTMLElement, projectId: string): () => void {
     popoutUrl: undefined,
     disableFloatingGroups: false,
     singleTabMode: "default",
-    scrollbars: "native",
+    scrollbars: "custom",
   });
   // Les onglets utilisent tous le même rendu React (icône, état modifié, aperçu en italique).
   api = dock;
@@ -311,10 +395,43 @@ export function mountDock(element: HTMLElement, projectId: string): () => void {
       if (g && !isEdge(g) && g.api.location.type === "grid") lastMainGroupId = g.id;
       syncDockState();
     }),
-    dock.onDidActivePanelChange(() => syncDockState()),
+    dock.onDidActivePanelChange((p) => {
+      touchMru(p?.panel?.id);
+      syncDockState();
+    }),
     dock.onDidMaximizedGroupChange(() => syncDockState()),
+    // Le panneau bas n'accueille que terminaux, sortie de l'agent et journal : un éditeur ou une session glissés
+    // dessus restent dans la zone d'édition (pas d'onglets de fichiers coincés en bas).
+    dock.onWillDrop((e) => {
+      const data = e.getData();
+      const dragged = data?.panelId ? dock.getPanel(data.panelId) : undefined;
+      const target = e.group;
+      if (target && isEdge(target) && dragged && !BOTTOM_COMPONENTS.has(dragged.api.component)) e.preventDefault();
+    }),
+    dock.onDidMovePanel((e) => {
+      const panel = e.panel;
+      if (isEdge(panel.group) && !BOTTOM_COMPONENTS.has(panel.api.component)) {
+        queueMicrotask(() => {
+          const main = gridGroups()[0];
+          try {
+            panel.api.moveTo({ group: main ?? dock.addGroup({ direction: "left" }) });
+          } catch {
+            // disposition en cours de reconstruction : ignoré
+          }
+        });
+      }
+    }),
     dock.onDidRemovePanel((panel) => {
       const params = panel.params as PanelParams | undefined;
+      mru = mru.filter((x) => x !== panel.id);
+      // Un terminal (PTY terminé) ou un document sans titre ne se « rouvre » pas.
+      const component = panel.api.component as PanelComponent;
+      if (recordClosed && KNOWN_COMPONENTS.has(component) && component !== "terminal" && !params?.untitled) {
+        closedStack = [
+          ...closedStack.filter((c) => c.id !== panel.id),
+          { id: panel.id, component, title: panel.title ?? panel.id, params: { ...params } },
+        ].slice(-30);
+      }
       if (panel.api.component === "editor" && params?.path) {
         const stillOpen = dock.panels.some(
           (p) =>
@@ -327,12 +444,36 @@ export function mountDock(element: HTMLElement, projectId: string): () => void {
     }),
   ];
 
-  const saved = readJsonPref<SerializedDockview>(layoutKey(projectId));
+  const stored = readJsonPref<StoredLayout | SerializedDockview>(layoutKey(projectId));
+  // Ancien onglet « Architecture » (retiré) : notification unique pointant vers Déploiement.
+  if (stored && JSON.stringify(stored).includes('"architecture"')) setTimeout(notifyArchitectureRemoved, 0);
+  // Ancien format (sans version) ou version différente : disposition par défaut, sans erreur.
+  const saved = stored && "v" in stored && stored.v === LAYOUT_VERSION ? stored.layout : undefined;
   if (saved) {
     try {
       dock.fromJSON(saved);
+      // Vues retirées et éditeurs sans titre (contenu non enregistré, non persisté) ne sont pas restaurés.
+      // Vues utilitaires (réglages, publication, consommation…) : jamais rouvertes automatiquement au démarrage.
+      const stale = dock.panels.filter(
+        (p) =>
+          !KNOWN_COMPONENTS.has(p.api.component) ||
+          UTILITY_COMPONENTS.has(p.api.component) ||
+          (p.params as PanelParams | undefined)?.untitled,
+      );
+      recordClosed = false;
+      for (const p of stale) p.api.close();
+      recordClosed = true;
+      ensureTopHeader();
+      // Contenus du panneau bas restés dans la grille (anciennes dispositions) : ramenés dans le panneau bas.
+      const strays = dock.panels.filter((p) => BOTTOM_COMPONENTS.has(p.api.component) && !isEdge(p.group));
+      if (strays.length > 0) {
+        const bottom = bottomGroup(true);
+        if (bottom) for (const p of strays) p.api.moveTo({ group: bottom });
+      }
     } catch {
+      recordClosed = false;
       dock.clear();
+      recordClosed = true;
     }
   }
   syncDockState();
@@ -340,7 +481,10 @@ export function mountDock(element: HTMLElement, projectId: string): () => void {
   return () => {
     if (saveTimer) clearTimeout(saveTimer);
     try {
-      writeJsonPref(layoutKey(projectId), sanitizeLayout(dock.toJSON()));
+      writeJsonPref(layoutKey(projectId), {
+        v: LAYOUT_VERSION,
+        layout: sanitizeLayout(dock.toJSON()),
+      } satisfies StoredLayout);
     } catch {
       // ignoré
     }
@@ -349,6 +493,17 @@ export function mountDock(element: HTMLElement, projectId: string): () => void {
     if (api === dock) api = undefined;
     usePortals.setState({ entries: {} });
   };
+}
+
+const ARCHITECTURE_NOTICE = "nexus.notice.architectureRemoved";
+function notifyArchitectureRemoved(): void {
+  if (readPref(ARCHITECTURE_NOTICE)) return;
+  writePref(ARCHITECTURE_NOTICE, "1");
+  toast.info(tNow("dock.architectureRemoved"), {
+    id: ARCHITECTURE_NOTICE,
+    duration: 15_000,
+    action: { label: tNow("dock.openDeployment"), onClick: () => openView("deployment") },
+  });
 }
 
 // --- Ouverture de contenus -------------------------------------------------------------------------------------
@@ -407,7 +562,10 @@ export function openFile(path: string, opts: { preview?: boolean; protected?: bo
         params: { path, preview: true, protected: opts.protected ?? false },
         position: { referenceGroup: group, index },
       });
+      // Aperçu remplacé (pas une fermeture demandée) : non mémorisé pour Ctrl+Maj+T.
+      recordClosed = false;
       previewPanel.api.close();
+      recordClosed = true;
       panel.api.setActive();
       return;
     }
@@ -440,18 +598,17 @@ export function openTerminal(opts: { cwd?: string; label?: string; split?: boole
   const id = `terminal:${Date.now().toString(36)}${++terminalSeq}`;
   const count = api.panels.filter((p) => p.api.component === "terminal").length;
   const title = opts.label ?? (count === 0 ? tNow("term.title") : `${tNow("term.title")} ${count + 1}`);
-  const activeTerminal = api.activePanel?.api.component === "terminal" ? api.activePanel : undefined;
-  if (opts.split && activeTerminal) {
-    api.addPanel({
-      id,
-      component: "terminal",
-      tabComponent: "terminal",
-      title,
-      params: { cwd: opts.cwd, label: opts.label },
-      renderer: "always",
-      position: { referencePanel: activeTerminal, direction: "right" },
-    });
-    return;
+  // Scinder : un second volet dans l'onglet terminal actif (ou le dernier du panneau bas), jamais dans l'éditeur.
+  if (opts.split) {
+    const active = api.activePanel?.api.component === "terminal" ? api.activePanel : undefined;
+    const target = active ?? bottomGroup(false)?.activePanel;
+    const ctrl = target ? terminalPanels.get(target.id) : undefined;
+    if (target && ctrl) {
+      showBottom();
+      target.api.setActive();
+      ctrl.split();
+      return;
+    }
   }
   const bottom = bottomGroup(true);
   if (bottom) {
@@ -473,9 +630,78 @@ export function openTerminal(opts: { cwd?: string; label?: string; split?: boole
   syncDockState();
 }
 
-/** Session interactive : le terminal de l'agent (PTY du main) s'ouvre comme onglet principal. */
-export function openAgentTerminal(opts: { terminalId: string; title: string; cwd?: string; taskId: string }): void {
+/** Affiche le panneau bas (s'il existe). */
+function showBottom(): void {
   if (!api) return;
+  try {
+    if (api.getEdgeGroup("bottom")) api.setEdgeGroupVisible("bottom", true);
+  } catch {
+    // ignoré
+  }
+}
+
+/** Agrandir / restaurer le panneau bas (hauteur presque totale de la zone de travail). */
+let bottomHeightBeforeMax: number | undefined;
+export function toggleBottomMaximize(): void {
+  if (!api) return;
+  const edge = api.getEdgeGroup("bottom");
+  if (!edge) return;
+  showBottom();
+  if (bottomHeightBeforeMax !== undefined) {
+    edge.setSize({ height: bottomHeightBeforeMax });
+    bottomHeightBeforeMax = undefined;
+  } else {
+    bottomHeightBeforeMax = edge.height;
+    edge.setSize({ height: Math.max(200, api.height - 90) });
+  }
+  useDockState.setState({ bottomMaximized: bottomHeightBeforeMax !== undefined });
+}
+
+/** Corbeille du panneau bas : ferme le volet focalisé du terminal actif (ou l'onglet actif du panneau). */
+export function killActiveTerminal(): void {
+  const group = bottomGroup(false);
+  const panel = api?.activePanel?.api.component === "terminal" ? api.activePanel : group?.activePanel;
+  if (!panel) return;
+  const ctrl = terminalPanels.get(panel.id);
+  if (ctrl) ctrl.killFocused();
+  else panel.api.close();
+}
+
+/** Panneau bas : « Sortie de l'agent » ou « Journal » (onglet unique, réactivé s'il existe). */
+export function openBottomView(component: "agentOutput" | "log"): void {
+  if (!api) return;
+  const id = `bottom:${component}`;
+  const existing = api.getPanel(id);
+  const bottom = bottomGroup(true);
+  showBottom();
+  if (existing) {
+    if (bottom && !isEdge(existing.group)) existing.api.moveTo({ group: bottom });
+    existing.api.setActive();
+  } else {
+    api.addPanel({
+      id,
+      component,
+      tabComponent: component,
+      title: tNow(component === "log" ? "bottom.log" : "bottom.agentOutput"),
+      params: {},
+      renderer: "onlyWhenVisible",
+      ...(bottom ? { position: { referenceGroup: bottom } } : { position: { direction: "below" } }),
+    });
+  }
+  syncDockState();
+}
+
+/** Session interactive : le terminal de l'agent (PTY du main) s'ouvre comme onglet du panneau bas. */
+export function openAgentTerminal(opts: {
+  terminalId: string;
+  title: string;
+  cwd?: string;
+  taskId: string;
+  agent?: string;
+  inactive?: boolean;
+}): void {
+  if (!api) return;
+  const title = (opts.agent ? `${opts.agent} · ${opts.title}` : opts.title).slice(0, 80);
   const id = `agent-term:${opts.taskId}`;
   const existing = api.getPanel(id);
   if (existing) {
@@ -485,13 +711,19 @@ export function openAgentTerminal(opts: { terminalId: string; title: string; cwd
     // Nouveau PTY (session reprise) : l'ancien onglet, rattaché à un terminal terminé, est remplacé.
     existing.api.close();
   }
-  addToMain({
+  const bottom = bottomGroup(true);
+  showBottom();
+  api.addPanel({
     id,
     component: "terminal",
-    title: opts.title,
-    params: { attachTerminalId: opts.terminalId, cwd: opts.cwd, label: opts.title, taskId: opts.taskId },
+    tabComponent: "terminal",
+    title,
+    params: { attachTerminalId: opts.terminalId, cwd: opts.cwd, label: title, taskId: opts.taskId },
     renderer: "always",
+    inactive: opts.inactive ?? false,
+    ...(bottom ? { position: { referenceGroup: bottom } } : { position: { direction: "below" } }),
   });
+  syncDockState();
 }
 
 /** Ctrl+` : affiche ou masque le panneau inférieur (crée un terminal s'il est vide). */
@@ -529,21 +761,59 @@ export function openSideBySide(
   items: Array<{ taskId: string; title: string; terminalId?: string; cwd?: string }>,
 ): void {
   if (!api) return;
-  let previous: IDockviewPanel | undefined;
+  // Comparaison en mode Terminal : un onglet par agent dans le panneau bas ; la conversation côte à côte en haut.
   for (const it of items) {
-    const id = it.terminalId ? `agent-term:${it.taskId}` : `session:${it.taskId}`;
-    api.getPanel(id)?.api.close();
-    const component: PanelComponent = it.terminalId ? "terminal" : "session";
-    const params: PanelParams = it.terminalId
-      ? { attachTerminalId: it.terminalId, cwd: it.cwd, label: it.title, taskId: it.taskId }
-      : { taskId: it.taskId };
-    const common = { id, component, tabComponent: component, title: it.title, params };
-    const panel: IDockviewPanel | undefined = previous
-      ? api.addPanel({ ...common, renderer: "always", position: { referencePanel: previous, direction: "right" } })
-      : addToMain({ ...common, renderer: "always" });
-    previous = panel ?? previous;
+    if (it.terminalId)
+      openAgentTerminal({
+        terminalId: it.terminalId,
+        title: it.title,
+        taskId: it.taskId,
+        ...(it.cwd && { cwd: it.cwd }),
+        inactive: true,
+      });
   }
+  // Disposition des conversations : colonnes (≤ 3 agents et assez de largeur), grille 2×N au-delà ou si la zone est
+  // moyenne, onglets d'un même groupe si elle est étroite — jamais 6 colonnes écrasées.
+  const width = api.width || window.innerWidth;
+  const n = items.length;
+  const cols = n <= 3 && width / n >= 380 ? n : width >= 760 ? 2 : 1;
+  const placed: IDockviewPanel[] = [];
+  items.forEach((it, i) => {
+    if (!api) return;
+    const id = `session:${it.taskId}`;
+    api.getPanel(id)?.api.close();
+    const common = {
+      id,
+      component: "session" as PanelComponent,
+      tabComponent: "session",
+      title: it.title,
+      params: { taskId: it.taskId } satisfies PanelParams,
+    };
+    const first = placed[0];
+    let panel: IDockviewPanel | undefined;
+    if (!first) panel = addToMain({ ...common, renderer: "always" });
+    else if (cols === 1)
+      panel = api.addPanel({ ...common, renderer: "always", position: { referenceGroup: first.group } });
+    else if (i % cols !== 0) {
+      const left = placed[i - 1] ?? first;
+      panel = api.addPanel({ ...common, renderer: "always", position: { referencePanel: left, direction: "right" } });
+    } else {
+      const above = placed[i - cols] ?? first;
+      panel = api.addPanel({ ...common, renderer: "always", position: { referencePanel: above, direction: "below" } });
+    }
+    if (panel) placed.push(panel);
+  });
+  placed[0]?.api.setActive();
   syncDockState();
+}
+
+/** Vue Orchestre d'une mission (onglet de la zone d'édition, toujours montée pour garder le fil et le graphe). */
+export function openOrchestra(missionId: string, title: string): void {
+  if (!api) return;
+  const id = `orchestra:${missionId}`;
+  const existing = api.getPanel(id);
+  if (existing) return existing.api.setActive();
+  addToMain({ id, component: "orchestra", title: title.slice(0, 60), params: { missionId }, renderer: "always" });
 }
 
 export function openMission(missionId: string, title: string): void {
@@ -554,7 +824,9 @@ export function openMission(missionId: string, title: string): void {
   addToMain({ id, component: "mission", title, params: { missionId } });
 }
 
-export function openView(component: "settings" | "architecture" | "delivery" | "approvals" | "teams"): void {
+export function openView(
+  component: "settings" | "usage" | "deployment" | "delivery" | "approvals" | "teams" | "shortcuts",
+): void {
   if (!api) return;
   const id = `view:${component}`;
   const existing = api.getPanel(id);
@@ -568,16 +840,16 @@ export function activePanel(): IDockviewPanel | undefined {
   return api?.activePanel;
 }
 
-export function closeActive(): void {
-  const panel = api?.activePanel;
-  if (panel) void requestClose(panel);
-}
-
 export function splitPanel(
   panel: IDockviewPanel | undefined = api?.activePanel,
   direction: "right" | "bottom" = "right",
 ): void {
   if (!api || !panel) return;
+  // Panneau bas : on scinde le terminal (second volet), jamais un groupe d'éditeurs partiel en bas.
+  if (isEdge(panel.group)) {
+    terminalPanels.get(panel.id)?.split();
+    return;
+  }
   const params = panel.params as PanelParams | undefined;
   // Un éditeur scindé ouvre une seconde vue du même fichier (même modèle Monaco) ; les autres panneaux sont déplacés.
   if (panel.api.component === "editor" && params?.path) {
@@ -598,17 +870,233 @@ export function splitPanel(
 
 export function toggleMaximize(panel: IDockviewPanel | undefined = api?.activePanel): void {
   if (!api || !panel) return;
+  if (isEdge(panel.group)) return toggleBottomMaximize();
   if (api.hasMaximizedGroup()) api.exitMaximizedGroup();
   else api.maximizeGroup(panel);
   syncDockState();
 }
 
+/** Groupe suivant : groupes de la zone d'édition de gauche à droite, puis le panneau bas s'il est visible. */
 export function focusNextGroup(): void {
-  api?.activateNext();
+  if (!api) return;
+  const groups = [...gridGroups()];
+  const bottom = bottomGroup(false);
+  if (bottom && api.isEdgeGroupVisible("bottom") && bottom.panels.length > 0) groups.push(bottom);
+  if (groups.length < 2) return;
+  const idx = groups.findIndex((g) => g.id === api?.activeGroup?.id);
+  const next = groups[(idx + 1) % groups.length];
+  (next?.activePanel ?? next?.panels[0])?.api.setActive();
 }
 
 /** Ferme tous les terminaux et éditeurs (changement de projet). */
 export function resetLayout(): void {
-  api?.clear();
+  recordClosed = false;
+  try {
+    api?.clear();
+  } finally {
+    recordClosed = true;
+  }
   syncDockState();
+}
+
+/** « Réinitialiser la disposition » : onglets de la zone d'édition gardés, groupes fusionnés, panneau bas remis à zéro. */
+export function resetLayoutToDefault(): void {
+  if (!api) return;
+  const keep = api.panels
+    .filter((p) => !BOTTOM_COMPONENTS.has(p.api.component) && !(p.params as PanelParams | undefined)?.untitled)
+    .map((p) => ({
+      id: p.id,
+      component: p.api.component as PanelComponent,
+      title: p.title ?? p.id,
+      params: { ...(p.params as PanelParams) },
+    }));
+  const terminals = api.panels.filter((p) => p.api.component === "terminal");
+  if (api.hasMaximizedGroup()) api.exitMaximizedGroup();
+  // Terminaux en cours conservés : ramenés dans le panneau bas, les autres contenus rouverts dans un seul groupe.
+  const bottom = bottomGroup(true);
+  if (bottom) for (const t of terminals) if (!isEdge(t.group)) t.api.moveTo({ group: bottom });
+  recordClosed = false;
+  for (const p of api.panels.filter((x) => !BOTTOM_COMPONENTS.has(x.api.component))) p.api.close();
+  for (const g of api.groups.filter((g) => !isEdge(g) && g.panels.length === 0 && g.api.location.type !== "grid"))
+    g.api.close();
+  recordClosed = true;
+  for (const p of keep)
+    addToMain({ ...p, renderer: p.component === "session" ? "always" : "onlyWhenVisible", inactive: true });
+  api.panels.find((p) => !isEdge(p.group))?.api.setActive();
+  if (currentProjectId) scheduleSave();
+  syncDockState();
+}
+
+// --- Navigation au clavier entre onglets et groupes (raccourcis façon VS Code) ---------------------------------
+
+/** Groupes de la grille principale (hors panneau inférieur et fenêtres flottantes), de gauche à droite. */
+function gridGroups(): DockviewGroupPanel[] {
+  if (!api) return [];
+  const pos = (g: DockviewGroupPanel) => {
+    const r = g.element.getBoundingClientRect();
+    return [r.left, r.top] as const;
+  };
+  return api.groups
+    .filter((g) => !isEdge(g) && g.api.location.type === "grid")
+    .sort((a, b) => {
+      const [ax, ay] = pos(a);
+      const [bx, by] = pos(b);
+      return Math.abs(ax - bx) > 4 ? ax - bx : ay - by;
+    });
+}
+
+/** Ctrl+W : ferme l'onglet actif (éditeur, diff, session, réglages, terminal…). */
+export function closeActive(): void {
+  const panel = api?.activePanel;
+  if (panel) void requestClose(panel);
+}
+
+/** Ctrl+K Ctrl+W : ferme tous les onglets du groupe actif (confirmation pour les fichiers modifiés). */
+export function closeGroupPanels(): void {
+  const group = api?.activeGroup;
+  if (group) void closeMany([...group.panels]);
+}
+
+/** Ctrl+Maj+T : rouvre le dernier onglet fermé. */
+export function reopenClosed(): boolean {
+  if (!api) return false;
+  while (closedStack.length > 0) {
+    const last = closedStack.pop();
+    if (!last) break;
+    const existing = api.getPanel(last.id);
+    if (existing) {
+      existing.api.setActive();
+      return true;
+    }
+    addToMain({
+      id: last.id,
+      component: last.component,
+      title: last.title,
+      params: last.params,
+      renderer: last.component === "session" ? "always" : "onlyWhenVisible",
+    });
+    return true;
+  }
+  return false;
+}
+
+/** Ctrl+Tab / Ctrl+Maj+Tab : onglets dans l'ordre d'utilisation récente (parcours tant que Ctrl est tenu). */
+export function cycleRecent(direction: 1 | -1): void {
+  if (!api) return;
+  const open = new Set(api.panels.map((p) => p.id));
+  if (!mruCycle) {
+    const order = mru.filter((id) => open.has(id));
+    for (const p of api.panels) if (!order.includes(p.id)) order.push(p.id);
+    if (order.length < 2) return;
+    mruCycle = { order, index: 0 };
+  }
+  const { order } = mruCycle;
+  mruCycle.index = (mruCycle.index + direction + order.length) % order.length;
+  const target = api.getPanel(order[mruCycle.index] ?? "");
+  target?.api.setActive();
+}
+
+/** Fin du parcours Ctrl+Tab (touche Ctrl relâchée) : l'onglet atteint devient le plus récent. */
+export function endRecentCycle(): void {
+  if (!mruCycle) return;
+  mruCycle = undefined;
+  touchMru(api?.activePanel?.id);
+}
+
+/** Ctrl+PgDn / Ctrl+PgUp : onglet suivant / précédent du groupe actif (circulaire). */
+export function cycleInGroup(direction: 1 | -1): void {
+  const group = api?.activeGroup;
+  if (!group || group.panels.length < 2) return;
+  const idx = group.panels.findIndex((p) => p.id === group.activePanel?.id);
+  group.panels[(idx + direction + group.panels.length) % group.panels.length]?.api.setActive();
+}
+
+/** Alt+1…9 : n-ième onglet du groupe actif (9 = le dernier). */
+export function goToTab(n: number): void {
+  const group = api?.activeGroup;
+  if (!group || group.panels.length === 0) return;
+  const panel = n >= 9 ? group.panels[group.panels.length - 1] : group.panels[n - 1];
+  panel?.api.setActive();
+}
+
+/** Ctrl+1/2/3 : focus du n-ième groupe ; le groupe suivant inexistant est créé en scindant l'onglet actif. */
+export function focusGroup(n: number): void {
+  if (!api) return;
+  const groups = gridGroups();
+  const target = groups[n - 1];
+  if (target) {
+    (target.activePanel ?? target.panels[0])?.api.setActive();
+    if (!target.activePanel) target.api.setActive();
+    return;
+  }
+  const active = api.activePanel;
+  if (n === groups.length + 1 && active && !isEdge(active.group)) splitPanel(active, "right");
+}
+
+/** Ctrl+K ← / → : déplace l'onglet actif vers le groupe voisin (créé s'il n'existe pas). */
+export function moveToNeighborGroup(direction: "left" | "right"): void {
+  if (!api) return;
+  const panel = api.activePanel;
+  if (!panel || isEdge(panel.group)) return;
+  const groups = gridGroups();
+  const idx = groups.findIndex((g) => g.id === panel.group.id);
+  const neighbor = groups[direction === "left" ? idx - 1 : idx + 1];
+  if (neighbor) {
+    panel.api.moveTo({ group: neighbor });
+  } else {
+    if (panel.group.panels.length < 2) return; // seul dans son groupe : rien à déplacer
+    const group = api.addGroup({ referenceGroup: panel.group, direction });
+    panel.api.moveTo({ group });
+  }
+  panel.api.setActive();
+}
+
+/** Mode zen : masque le panneau inférieur (les barres sont masquées par le plan de travail). */
+let bottomBeforeZen = false;
+export function setZenDock(on: boolean): void {
+  if (!api) return;
+  try {
+    if (on) {
+      bottomBeforeZen = Boolean(api.getEdgeGroup("bottom")) && api.isEdgeGroupVisible("bottom");
+      if (bottomBeforeZen) api.setEdgeGroupVisible("bottom", false);
+      if (api.hasMaximizedGroup()) api.exitMaximizedGroup();
+    } else if (bottomBeforeZen && api.getEdgeGroup("bottom")) {
+      api.setEdgeGroupVisible("bottom", true);
+    }
+  } catch {
+    // panneau inférieur absent
+  }
+  syncDockState();
+}
+
+let untitledSeq = 0;
+/** Ctrl+N : nouvel éditeur sans titre (enregistré sous un chemin choisi au premier Ctrl+S). */
+export function openUntitled(key: string): void {
+  if (!api) return;
+  untitledSeq += 1;
+  addToMain({
+    id: `editor:${key}`,
+    component: "editor",
+    title: `${tNow("editor.untitled")}-${untitledSeq}`,
+    params: { path: key, preview: false, untitled: true },
+  });
+}
+
+/** Remplace un onglet sans titre par l'éditeur du fichier enregistré. */
+export function replaceUntitled(key: string, path: string): void {
+  if (!api) return;
+  const panel = api.getPanel(`editor:${key}`);
+  const existing = api.getPanel(`editor:${path}`);
+  if (existing) existing.api.close();
+  const group = panel?.group;
+  const index = group ? group.panels.indexOf(panel) : undefined;
+  api.addPanel({
+    id: `editor:${path}`,
+    component: "editor",
+    tabComponent: "editor",
+    title: fileName(path),
+    params: { path, preview: false, protected: false },
+    ...(group ? { position: { referenceGroup: group, index } } : {}),
+  });
+  panel?.api.close();
 }

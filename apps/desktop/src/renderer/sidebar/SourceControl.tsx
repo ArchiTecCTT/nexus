@@ -114,6 +114,7 @@ export function SourceControl() {
             </div>
             <textarea
               className="input commit-input"
+              data-testid="commit-message"
               placeholder={t("git.messagePlaceholder")}
               aria-label={t("git.message")}
               value={message}

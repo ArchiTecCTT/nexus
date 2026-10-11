@@ -21,6 +21,10 @@ interface FilesState {
   revealPath(path: string): Promise<void>;
   select(path: string | undefined): void;
   setInline(edit: InlineEdit | undefined): void;
+  /** Dossier cible d'une création : dossier sélectionné, parent du fichier sélectionné, ou racine. */
+  targetDir(): string;
+  /** Création en ligne dans le dossier cible (déplié pour afficher la saisie à cet endroit). */
+  startCreate(kind: "file" | "directory"): void;
   refreshAll(): Promise<void>;
   handleFsChanges(paths: string[]): void;
   startWatch(): Promise<void>;
@@ -83,6 +87,16 @@ export const useFilesStore = create<FilesState>()((set, get) => ({
   },
   select(path) {
     set({ selected: path });
+  },
+  targetDir() {
+    const sel = get().selected;
+    if (!sel) return "";
+    const parent = parentOf(sel);
+    const entry = get().children[parent]?.data?.find((e) => e.path === sel);
+    return entry?.kind === "directory" ? sel : parent;
+  },
+  startCreate(kind) {
+    get().setInline({ mode: "create", dir: get().targetDir(), kind });
   },
   setInline(edit) {
     set({ inline: edit });

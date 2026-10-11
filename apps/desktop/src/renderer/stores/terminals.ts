@@ -76,3 +76,17 @@ export const terminalBus = {
     };
   },
 };
+
+/** Actions clavier d'un terminal affiché (copier, coller, effacer), par panneau : utilisées par la palette. */
+export interface TerminalControls {
+  copySelection(): void;
+  paste(): void;
+  clear(): void;
+  focus(): void;
+  search(): void;
+  restart(): void;
+}
+/** Par volet (clé du volet) et par onglet (`<panelId>#panel`, qui délègue au volet focalisé). */
+export const terminalControls = new Map<string, TerminalControls>();
+/** Actions d'un onglet terminal : scinder, fermer le volet focalisé. */
+export const terminalPanels = new Map<string, { split(): void; killFocused(): void }>();

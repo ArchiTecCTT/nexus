@@ -6,7 +6,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,35 @@ async function shot(name: string): Promise<void> {
 
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 
+/** Identifiants des commandes visibles dans la palette (attribut data-command). */
+async function paletteCommandIds(): Promise<string[]> {
+  await page.keyboard.press(`${mod}+Shift+P`);
+  await page.getByPlaceholder("Tapez une commande…").waitFor();
+  const ids = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("[data-command]")].map((e) => e.dataset.command ?? ""),
+  );
+  await page.keyboard.press("Escape");
+  return ids.filter(Boolean);
+}
+
+/** Exécute une commande depuis la palette, puis referme toute boîte ouverte. */
+async function runFromPalette(id: string): Promise<void> {
+  await page.keyboard.press(`${mod}+Shift+P`);
+  const input = page.getByPlaceholder("Tapez une commande…");
+  await input.waitFor();
+  await input.fill(id);
+  await page.locator(`[data-command="${id}"]`).click();
+  await page.waitForTimeout(250);
+  for (let i = 0; i < 3; i++) {
+    if ((await page.getByRole("dialog").count()) === 0) break;
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(120);
+  }
+}
+
+/** Commandes à effets externes (boîtes natives, fermeture du projet, langue) : non exécutées en boucle. */
+const SKIP_COMMANDS = new Set(["openFolder", "importArchive", "exportProject", "closeProject", "lang.toggle"]);
+
 before(async () => {
   app = await electron.launch({
     args: [appDir],
@@ -66,7 +95,10 @@ after(async () => {
 });
 
 test("accueil : zone de dépôt, ouverture de dossier, récents", async () => {
-  await page.getByRole("heading", { level: 1, name: "Bonjour. Sur quoi travaille-t-on ?" }).waitFor();
+  await page
+    .getByRole("heading", { level: 1, name: "Décrivez un objectif. Une équipe d'agents IA s'en charge." })
+    .waitFor();
+  await page.getByTestId("orchestra-hero").getByRole("button", { name: "Lancer un orchestre" }).waitFor();
   const dropzone = page.getByTestId("dropzone");
   await dropzone.getByText("Glissez un dossier ici").waitFor();
   assert.equal(await page.getByRole("button", { name: "Ouvrir un dossier" }).isVisible(), true);
@@ -74,6 +106,19 @@ test("accueil : zone de dépôt, ouverture de dossier, récents", async () => {
   assert.equal(await page.getByRole("button", { name: /Importer une archive/ }).isVisible(), true);
   await page.getByRole("heading", { name: "Récents" }).waitFor();
   await shot("01-accueil");
+});
+
+test("palette sans projet : chaque commande s'exécute sans erreur", async () => {
+  const before = pageErrors.length;
+  const ids = await paletteCommandIds();
+  assert.ok(ids.length >= 5, `commandes sans projet : ${ids.join(", ")}`);
+  for (const id of ids) {
+    if (SKIP_COMMANDS.has(id)) continue;
+    await runFromPalette(id);
+    assert.equal(pageErrors.length, before, `erreur JS après « ${id} » : ${pageErrors.slice(before).join(" | ")}`);
+  }
+  await runFromPalette("theme.dark");
+  await page.getByRole("heading", { level: 1 }).waitFor();
 });
 
 test("glisser-déposer simulé : survol mis en évidence, élément sans chemin refusé proprement", async () => {
@@ -103,7 +148,7 @@ test("ouverture d'un projet par son chemin : le plan de travail s'affiche", asyn
   await page.getByTestId("workbench").waitFor();
   await page.getByRole("button", { name: "Menu du projet" }).getByText("stock-app").waitFor();
   await page.getByRole("navigation", { name: "Barre d'activité" }).waitFor();
-  assert.equal(await page.getByRole("navigation", { name: "Barre d'activité" }).getByRole("button").count(), 6);
+  assert.equal(await page.getByRole("navigation", { name: "Barre d'activité" }).getByRole("button").count(), 8);
   await page.getByRole("contentinfo", { name: "Barre d'état" }).waitFor();
 });
 
@@ -126,6 +171,43 @@ test("explorateur : arbre paresseux, fichier protégé verrouillé, navigation c
   const selected = await tree.locator("[aria-selected=true]").getAttribute("data-path");
   assert.ok(selected && selected !== "src", `sélection après flèche bas : ${selected}`);
   await shot("03-explorateur");
+});
+
+test("explorateur : création dans le dossier sélectionné (saisie en ligne), glisser-déposer, révéler", async () => {
+  const tree = page.getByTestId("explorer-tree");
+  const sidebar = page.getByTestId("sidebar");
+  // Dossier sélectionné → « Nouveau fichier » crée l'élément DANS ce dossier, saisie en ligne à cet endroit.
+  const src = tree.getByRole("treeitem", { name: "src", exact: true });
+  await src.click();
+  if ((await src.getAttribute("aria-expanded")) !== "true") await src.click();
+  await tree.getByRole("treeitem", { name: "index.ts" }).waitFor();
+  assert.equal(await src.getAttribute("aria-selected"), "true");
+  await sidebar.getByRole("button", { name: "Nouveau fichier" }).click();
+  const inline = tree.locator(".tree-row.is-editing input");
+  await inline.waitFor();
+  const srcRow = await tree.getByRole("treeitem", { name: "src", exact: true }).boundingBox();
+  const inputRow = await tree.locator(".tree-row.is-editing").boundingBox();
+  assert.ok(srcRow && inputRow && inputRow.y > srcRow.y, "saisie sous le dossier sélectionné");
+  assert.ok(inputRow && srcRow && inputRow.x >= srcRow.x, "saisie indentée dans le dossier");
+  await inline.fill("created.ts");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelector('[data-path="src/created.ts"]') !== null);
+  assert.ok(existsSync(join(projectDir, "src", "created.ts")));
+
+  // Glisser-déposer : src/created.ts → src/utils (files.rename).
+  await tree.getByRole("treeitem", { name: "utils" }).click();
+  await tree.locator('[data-path="src/created.ts"]').dragTo(tree.getByRole("treeitem", { name: "utils" }));
+  const moved = join(projectDir, "src", "utils", "created.ts");
+  for (let i = 0; i < 40 && !existsSync(moved); i++) await page.waitForTimeout(100);
+  assert.ok(existsSync(moved), "fichier déplacé par glisser-déposer");
+  rmSync(moved, { force: true });
+
+  // Tout replier : les dossiers dépliés se referment.
+  await sidebar.getByRole("button", { name: "Tout replier" }).click();
+  await tree.getByRole("treeitem", { name: "index.ts" }).waitFor({ state: "detached" });
+  await src.click(); // redéplié pour la suite du parcours
+  await tree.getByRole("treeitem", { name: "index.ts" }).waitFor();
+  await shot("03b-explorateur-creation");
 });
 
 test("éditeur Monaco : aperçu en italique, modification, Ctrl+S enregistre sur le disque", async () => {
@@ -230,6 +312,59 @@ test("Ctrl+W ferme l'onglet actif sans fermer la fenêtre", async () => {
   await page.getByTestId("workbench").waitFor();
 });
 
+test("raccourcis : Ctrl+Maj+T rouvre, Ctrl+Tab change d'onglet, accord Ctrl+K Ctrl+W, page des raccourcis", async () => {
+  const mathEditor = page.locator('[data-testid=editor-panel][data-path="src/utils/math.ts"]');
+  // Ctrl+Maj+T : l'onglet fermé au test précédent revient ; la fenêtre reste ouverte.
+  await page.keyboard.press(`${mod}+Shift+T`);
+  await mathEditor.waitFor({ timeout: 15_000 });
+  assert.equal(app.windows().length, 1);
+
+  // Ctrl+Tab (Ctrl relâché) : onglet utilisé juste avant ; une seconde fois : retour sur math.ts.
+  await page.keyboard.press("Control+Tab");
+  await mathEditor.waitFor({ state: "detached" });
+  await page.keyboard.press("Control+Tab");
+  await mathEditor.waitFor();
+
+  // Accord Ctrl+K Ctrl+W : indication dans la barre d'état, puis fermeture de tous les onglets du groupe.
+  await mathEditor.locator(".view-lines").click();
+  await page.keyboard.press(`${mod}+Backslash`); // scinde : nouveau groupe avec une seconde vue de math.ts
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-testid=editor-panel][data-path="src/utils/math.ts"]').length === 2,
+  );
+  await page.keyboard.press(`${mod}+K`);
+  await page
+    .getByTestId("chord-pending")
+    .getByText(/en attente d'une seconde touche/)
+    .waitFor();
+  await page.keyboard.press(`${mod}+W`);
+  await page.getByTestId("chord-pending").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-testid=editor-panel][data-path="src/utils/math.ts"]').length === 1,
+  );
+  assert.equal(app.windows().length, 1);
+
+  // Ctrl+K Ctrl+S : page « Raccourcis clavier », filtrable, avec les accords affichés.
+  await page.keyboard.press(`${mod}+K`);
+  await page.keyboard.press(`${mod}+S`);
+  const keysPanel = page.getByTestId("shortcuts-panel");
+  await keysPanel.getByRole("heading", { level: 2, name: "Raccourcis clavier" }).waitFor({ timeout: 15_000 });
+  const reopenRow = keysPanel.getByRole("row", { name: /Rouvrir l'onglet fermé/ });
+  await reopenRow.waitFor();
+  assert.match(await reopenRow.innerText(), /Ctrl\+Maj\+T|⌘⇧T/);
+  assert.match(
+    await keysPanel.getByRole("row", { name: /Fermer tous les onglets du groupe/ }).innerText(),
+    /Ctrl\+K Ctrl\+W|⌘K ⌘W/,
+  );
+  await keysPanel.getByLabel("Filtrer par commande ou touche").fill("zen");
+  await keysPanel.getByRole("row", { name: /Mode zen/ }).waitFor();
+  assert.equal(await keysPanel.getByRole("row", { name: /Rouvrir l'onglet fermé/ }).count(), 0);
+  await shot("06c-raccourcis");
+  // Ctrl+W ferme aussi une vue (pas seulement un fichier).
+  await page.keyboard.press(`${mod}+W`);
+  await keysPanel.waitFor({ state: "detached" });
+  assert.equal(app.windows().length, 1);
+});
+
 test("nouvelle session : agent, consigne et trois grandes cartes de mode", async () => {
   await page.getByRole("button", { name: "Session", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Nouvelle session" });
@@ -239,8 +374,8 @@ test("nouvelle session : agent, consigne et trois grandes cartes de mode", async
   await dialog.getByRole("radio", { name: /Autonome\s*L'agent agit directement/ }).waitFor();
   await dialog.getByRole("radio", { name: /Autonome en sandbox/ }).waitFor();
   // TUI interactive (« Terminal ») choisie par défaut pour claude-cli/codex-cli/gemini-cli.
-  const claude = dialog.getByRole("radio", { name: /claude-cli/ });
-  if (await claude.isVisible().catch(() => false)) {
+  const claude = dialog.getByRole("radio", { name: /Claude Code/ });
+  if ((await claude.isVisible().catch(() => false)) && (await claude.isEnabled())) {
     await claude.click();
     const view = dialog.getByRole("radiogroup", { name: "Affichage de la session" });
     assert.equal(await view.getByRole("radio", { name: /Terminal/ }).getAttribute("aria-checked"), "true");
@@ -330,6 +465,109 @@ test("sandbox : connexion refusée -> toast « Autoriser ce domaine »", async (
   );
 });
 
+test("orchestre : dialogue (chef, équipe et spécialités, mode, autonomie) et validation des champs", async () => {
+  await page.getByRole("button", { name: "Orchestre", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Nouvel orchestre" });
+  await dialog.waitFor();
+  await dialog.getByRole("radiogroup", { name: "Chef d'orchestre" }).waitFor();
+  await dialog.getByText("Messagerie directe entre agents indisponible en sandbox").waitFor();
+  await dialog.getByRole("radio", { name: "Je valide le plan" }).waitFor();
+  // Spécialités affichées pour les agents détectés (si Claude/Codex sont installés).
+  if ((await dialog.getByTestId("orch-member-codex-cli").count()) > 0)
+    await dialog.getByTestId("orch-member-codex-cli").getByText("Implémentation, tests").waitFor();
+  // Objectif vide : le lancement est refusé avec un message clair, aucun agent n'est lancé.
+  await dialog.getByRole("button", { name: "Lancer un orchestre" }).click();
+  await dialog.getByTestId("orch-problems").getByText("Décrivez l'objectif de l'orchestre.").waitFor();
+  await dialog.getByLabel("Objectif").fill("Ajouter une page de connexion");
+  await dialog.getByTestId("orch-problems").getByText("Décrivez l'objectif").waitFor({ state: "detached" });
+  await shot("18-nouvel-orchestre");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+});
+
+test("orchestre : vue alimentée par des événements injectés (fil, messages entre agents, revue, synthèse)", async () => {
+  const missionId = "7d1f3c2a-9b4e-4c1d-8a2f-0e5b6c7d8e9f";
+  const entries = [
+    { kind: "phase", text: "planning", from: "Chef d'orchestre" },
+    { kind: "plan", text: "1. API d'authentification\n2. Page de connexion\n3. Tests", from: "Chef d'orchestre" },
+    { kind: "assign", text: "API d'authentification", from: "Chef d'orchestre", to: "Claude Code" },
+    { kind: "phase", text: "running", from: "Chef d'orchestre" },
+    { kind: "message", text: "Quel format pour le jeton ?", from: "Codex CLI", to: "Claude Code" },
+    { kind: "handoff", text: "Schéma de l'API transmis", from: "Claude Code", to: "Codex CLI" },
+    { kind: "review", text: "Accepté : tests verts.", from: "Chef d'orchestre", to: "Codex CLI" },
+    { kind: "summary", text: "Authentification livrée avec tests.", from: "Chef d'orchestre" },
+    { kind: "phase", text: "done", from: "Chef d'orchestre" },
+  ];
+  await app.evaluate(
+    ({ BrowserWindow }, { missionId, entries }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      entries.forEach((e, i) =>
+        w?.webContents.send("nexus:event", {
+          type: "orchestra",
+          missionId,
+          entry: { ...e, at: new Date(Date.UTC(2026, 9, 11, 10, 0, i)).toISOString() },
+        }),
+      );
+    },
+    { missionId, entries },
+  );
+  await page.getByRole("navigation", { name: "Barre d'activité" }).getByRole("button", { name: "Orchestres" }).click();
+  const row = page.getByTestId("orchestra-row").first();
+  await row.waitFor();
+  await row.click();
+  const panel = page.getByTestId("orchestra-panel");
+  await panel.waitFor();
+  const feed = panel.getByTestId("orch-feed");
+  await feed.getByTestId("orch-message").getByText("Quel format pour le jeton ?").waitFor();
+  assert.match(await feed.getByTestId("orch-message").innerText(), /Codex CLI[\s\S]*Claude Code/);
+  await feed.getByTestId("orch-review").getByText("Accepté", { exact: true }).waitFor();
+  await feed.getByTestId("orch-handoff").waitFor();
+  await feed.getByTestId("orch-summary").getByText("Authentification livrée avec tests.").waitFor();
+  await panel.getByTestId("orch-phase").getByText("Terminé").waitFor();
+  await panel.getByLabel("Message au chef d'orchestre").waitFor();
+  await shot("19-orchestre");
+});
+
+test("orchestre en échec : bandeau des erreurs, réattribution mise en forme", async () => {
+  const missionId = "8e2a4d3b-0c5f-4d2e-9b3a-1f6c7d8e9fa0";
+  const entries = [
+    { kind: "phase", text: "running", from: "Chef d'orchestre" },
+    { kind: "plan", text: "1. Migration de la base\n2. API", from: "Chef d'orchestre" },
+    { kind: "error", text: "Gemini CLI : délai dépassé pendant « Migration de la base »", from: "Gemini CLI" },
+    {
+      kind: "assign",
+      text: "Migration de la base : échec de Gemini CLI (délai dépassé) — réattribuée à Codex CLI",
+      from: "Chef d'orchestre",
+      to: "Codex CLI",
+    },
+    { kind: "error", text: "Codex CLI : tests en échec après 2 tours de revue", from: "Codex CLI" },
+    { kind: "phase", text: "failed", from: "Chef d'orchestre" },
+  ];
+  await app.evaluate(
+    ({ BrowserWindow }, { missionId, entries }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      entries.forEach((e, i) =>
+        w?.webContents.send("nexus:event", {
+          type: "orchestra",
+          missionId,
+          entry: { ...e, at: new Date(Date.UTC(2026, 9, 11, 11, 0, i)).toISOString() },
+        }),
+      );
+    },
+    { missionId, entries },
+  );
+  await page.getByTestId("orchestra-list").getByText("1. Migration de la base").click();
+  const panel = page.locator("[data-testid=orchestra-panel]:visible");
+  const banner = panel.getByTestId("orch-failed");
+  await banner.getByText("L'orchestre a échoué").waitFor();
+  await banner.getByText(/délai dépassé pendant/).waitFor();
+  await banner.getByText(/tests en échec/).waitFor();
+  const reassign = panel.getByTestId("orch-reassign");
+  await reassign.getByText("réattribuée", { exact: true }).waitFor();
+  await reassign.locator(".orch-reason").getByText("délai dépassé").waitFor();
+  await shot("20-orchestre-echec");
+});
+
 test("agents : liste des sessions et bouton Nouvelle session", async () => {
   await page.getByRole("navigation", { name: "Barre d'activité" }).getByRole("button", { name: "Agents" }).click();
   await page.getByTestId("sessions-list").waitFor();
@@ -356,7 +594,7 @@ test("réglages : thème clair puis sombre, langue EN puis FR", async () => {
   await page.getByRole("navigation", { name: "Barre d'activité" }).waitFor();
 });
 
-test("vues avancées (missions, équipes, approbations, architecture, publication) : rendu sans plantage", async () => {
+test("vues avancées (missions, équipes, approbations, consommation, publication) : rendu sans plantage", async () => {
   await page
     .getByRole("navigation", { name: "Barre d'activité" })
     .getByRole("button", { name: "Missions avancées" })
@@ -365,7 +603,7 @@ test("vues avancées (missions, équipes, approbations, architecture, publicatio
   const views: Array<[string, string]> = [
     ["Gérer les équipes", "Équipes"],
     ["Ouvrir les approbations", "Approbations"],
-    ["Architecture et usage", "Architecture et usage"],
+    ["Consommation des agents", "Consommation"],
     ["Publier (push vérifié, Vercel)…", "Publication"],
   ];
   for (const [command, heading] of views) {
@@ -377,10 +615,139 @@ test("vues avancées (missions, équipes, approbations, architecture, publicatio
   }
   await page.getByRole("heading", { level: 2, name: "Publication" }).waitFor();
   await shot("13-publication");
-  await page.locator(".tab-inner", { hasText: "Architecture et usage" }).click();
-  // Diagramme Mermaid (strict) rendu, ou erreur expliquée.
-  await page.locator("figure.diagram svg").or(page.getByRole("alert")).first().waitFor({ timeout: 20_000 });
-  await shot("14-architecture");
+  // Plus de panneau Architecture ni de diagramme Mermaid : ni commande, ni lien, ni rendu.
+  await page.keyboard.press(`${mod}+Shift+P`);
+  await page.getByPlaceholder("Tapez une commande…").fill("Architecture");
+  await page.getByText("Aucune commande").or(page.getByRole("listbox")).first().waitFor();
+  assert.equal(await page.getByRole("option", { name: /Architecture/ }).count(), 0);
+  await page.keyboard.press("Escape");
+  assert.equal(
+    await page
+      .getByTestId("sidebar")
+      .getByText(/Architecture/)
+      .count(),
+    0,
+  );
+  assert.equal(await page.locator(".mermaid, figure.diagram").count(), 0);
+});
+
+test("déploiement : analyse, propositions, choix, secret jamais réaffiché (sans réseau)", async () => {
+  // Projet MERN minimal ajouté au projet de test : un front (Vite/React) et un back (Express + Mongoose).
+  mkdirSync(join(projectDir, "client"), { recursive: true });
+  mkdirSync(join(projectDir, "server"), { recursive: true });
+  writeFileSync(
+    join(projectDir, "client", "package.json"),
+    JSON.stringify({
+      name: "stock-client",
+      scripts: { build: "vite build" },
+      dependencies: { react: "19", vite: "7" },
+    }),
+  );
+  writeFileSync(join(projectDir, "client", ".env.example"), "VITE_API_URL=http://localhost:3000\n");
+  writeFileSync(
+    join(projectDir, "server", "package.json"),
+    JSON.stringify({
+      name: "stock-api",
+      scripts: { start: "node index.js" },
+      dependencies: { express: "5", mongoose: "8" },
+    }),
+  );
+  writeFileSync(join(projectDir, "server", ".env.example"), "MONGODB_URI=\nJWT_SECRET=change-me\n");
+
+  // Entrée dans la barre d'activité.
+  await page.getByRole("navigation", { name: "Barre d'activité" }).getByRole("button", { name: "Déploiement" }).click();
+  const panel = page.getByTestId("deployment-panel");
+  await panel.getByRole("heading", { level: 2, name: "Déploiement" }).waitFor({ timeout: 15_000 });
+  const analyze = panel.getByRole("button", { name: /Analyser mon projet|Réanalyser/ });
+  await analyze.click();
+  // Résumé : composants détectés avec leurs variables attendues.
+  const profile = panel.getByTestId("deploy-profile");
+  await profile.getByText("stock-client").waitFor({ timeout: 20_000 });
+  await profile.getByText("stock-api").waitFor();
+  await profile.getByText("JWT_SECRET").waitFor();
+  await profile.getByText("mongodb", { exact: true }).waitFor();
+  // Propositions comparables avec schéma de placement, coût et badge d'origine.
+  const cards = panel.getByTestId("proposal-card");
+  await cards.first().waitFor();
+  assert.ok((await cards.count()) >= 2, "au moins deux propositions");
+  const first = cards.first();
+  assert.ok((await first.locator(".placement-row").count()) >= 2);
+  await first.getByText("Catalogue", { exact: true }).waitFor();
+  await first.getByText("Coût mensuel").waitFor();
+  await panel.getByTestId("deploy-lead").getByLabel("Votre demande").waitFor();
+  await shot("14-deploiement-propositions");
+
+  // Choix d'une proposition -> étapes « Préparer » puis « Déployer ».
+  await first.getByRole("button", { name: "Choisir" }).click();
+  await first.getByText("Choisie", { exact: true }).waitFor();
+  const prepare = panel.getByTestId("deploy-prepare");
+  await prepare.waitFor();
+  assert.ok((await panel.getByTestId("deploy-step").count()) >= 1);
+  // Étape automatique sans ses prérequis (jetons, paramètres, étapes amont) : « Lancer » désactivé, liste cliquable.
+  const blocked = panel
+    .getByTestId("deploy-step")
+    .filter({ has: page.getByTestId("step-missing") })
+    .first();
+  await blocked.waitFor();
+  assert.equal(await blocked.getByRole("button", { name: "Lancer" }).isDisabled(), true);
+  const missingLink = blocked.getByTestId("step-missing").getByRole("button").first();
+  await missingLink.click();
+  await page.waitForFunction(() => (document.activeElement?.id ?? "").startsWith("dplan-"));
+
+  // Saisie d'un secret : le champ est vidé aussitôt, la valeur n'apparaît nulle part dans le DOM.
+  const secretValue = "e2e-ultra-secret-value-123456";
+  const field = prepare.locator('.secret-field[data-ref="deploy.env.backend-1.jwt_secret"]');
+  await field.waitFor();
+  const input = field.locator('input[type="password"]');
+  await input.fill(secretValue);
+  await field.getByRole("button", { name: "Enregistrer" }).click();
+  assert.equal(await input.inputValue(), "");
+  // Coffre disponible : coche « enregistré » ; sinon, erreur expliquée en toast.
+  await field
+    .getByTestId("secret-present")
+    .or(page.locator("[data-sonner-toast]", { hasText: /coffre|indisponible/i }))
+    .first()
+    .waitFor({ timeout: 15_000 });
+  const html = await page.content();
+  assert.ok(!html.includes(secretValue), "le secret ne doit apparaître nulle part dans le DOM");
+  const values = await page.evaluate(() =>
+    [...document.querySelectorAll("input, textarea")].map((e) => (e as HTMLInputElement).value),
+  );
+  assert.ok(!values.some((v) => v.includes(secretValue)));
+  await shot("15-deploiement-preparer");
+
+  // Étape manuelle éventuelle : « Marquer comme fait » (aucune étape automatique lancée : pas de réseau).
+  const manual = panel.getByTestId("deploy-step").filter({ hasText: "Manuelle" }).first();
+  if ((await manual.count()) > 0) {
+    await manual.getByRole("button", { name: "Marquer comme fait" }).click();
+    await manual.getByRole("button", { name: "À refaire" }).waitFor();
+  }
+  await panel.getByTestId("deploy-step").first().scrollIntoViewIfNeeded();
+  await shot("16-deploiement-etapes");
+});
+
+test("dépôt d'un dossier sur le plan de travail : survol accepté (dragover) avec retour visuel", async () => {
+  const accepted = await page.evaluate(() => {
+    const el = document.querySelector("[data-testid=workbench]");
+    if (!el) return { enter: false, over: false };
+    const dt = new DataTransfer();
+    dt.items.add(new File(["x"], "dossier"));
+    const enter = new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt });
+    const over = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt });
+    el.dispatchEvent(enter);
+    el.dispatchEvent(over);
+    return { enter: enter.defaultPrevented, over: over.defaultPrevented };
+  });
+  assert.deepEqual(accepted, { enter: true, over: true });
+  await page.getByTestId("workbench-drop").getByText("Relâchez pour ouvrir le dossier").waitFor();
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["x"], "dossier"));
+    document
+      .querySelector("[data-testid=workbench]")
+      ?.dispatchEvent(new DragEvent("dragleave", { bubbles: true, cancelable: true, dataTransfer: dt }));
+  });
+  await page.getByTestId("workbench-drop").waitFor({ state: "detached" });
 });
 
 test("fermer puis rouvrir le projet depuis les récents : disposition restaurée", async () => {
@@ -396,6 +763,83 @@ test("fermer puis rouvrir le projet depuis les récents : disposition restaurée
   await page
     .locator('[data-testid=editor-panel][data-path="src/index.ts"] .monaco-editor')
     .waitFor({ timeout: 20_000 });
+});
+
+test("disposition : panneau bas pleine largeur (Terminal / Sortie de l'agent / Journal), jamais d'éditeur en bas", async () => {
+  await runFromPalette("panel.log");
+  const bottom = page.locator(".dv-edge-group");
+  await bottom.getByTestId("log-panel").waitFor();
+  await runFromPalette("panel.agentOutput");
+  await bottom.getByTestId("agent-output").waitFor();
+  await runFromPalette("terminal.new");
+  // Rendu « toujours monté » de dockview : le terminal est dans une couche superposée, placée sur le panneau bas.
+  const term = page.locator("[data-testid=terminal-panel]:visible");
+  await term.waitFor();
+  const termBox = await term.boundingBox();
+  const bottomBox = await bottom.boundingBox();
+  assert.ok(
+    termBox &&
+      bottomBox &&
+      termBox.y >= bottomBox.y - 2 &&
+      termBox.y + termBox.height <= bottomBox.y + bottomBox.height + 2,
+    "terminal affiché dans le panneau bas",
+  );
+  // Scinder : un second volet dans le même onglet du panneau bas (pas un groupe dans la zone d'édition).
+  await runFromPalette("terminal.split");
+  await term.getByTestId("terminal-pane").nth(1).waitFor();
+  assert.equal(await page.locator(".dv-edge-group [data-testid=editor-panel]").count(), 0);
+  const main = await page.locator("main.workbench-main").boundingBox();
+  const panel = await bottom.boundingBox();
+  assert.ok(main && panel && panel.width >= main.width - 4, "panneau bas sur toute la largeur de la zone de travail");
+  await shot("17-panneau-bas");
+  await runFromPalette("terminal.kill");
+  await term.getByTestId("terminal-pane").nth(1).waitFor({ state: "detached" });
+  // Réinitialiser la disposition : aucune erreur, la zone d'édition reste utilisable.
+  await runFromPalette("layout.reset");
+  await page.getByTestId("workbench").waitFor();
+});
+
+test("palette avec projet : chaque commande s'exécute sans erreur", async () => {
+  const before = pageErrors.length;
+  const ids = await paletteCommandIds();
+  assert.ok(ids.length >= 40, `commandes avec projet : ${ids.length}`);
+  for (const id of ids) {
+    if (SKIP_COMMANDS.has(id)) continue;
+    await runFromPalette(id);
+    assert.equal(pageErrors.length, before, `erreur JS après « ${id} » : ${pageErrors.slice(before).join(" | ")}`);
+  }
+  // Remise en état pour la suite : thème sombre, pas de mode zen, barre latérale visible.
+  await runFromPalette("theme.dark");
+  if ((await page.locator(".workbench.is-zen").count()) > 0) await page.locator(".zen-exit").click();
+  if ((await page.getByTestId("sidebar").count()) === 0) await page.keyboard.press(`${mod}+B`);
+  await page.getByTestId("workbench").waitFor();
+});
+
+test("ancien onglet Architecture dans une disposition sauvegardée : notification unique vers Déploiement", async () => {
+  await page.getByRole("button", { name: "Menu du projet" }).click();
+  await page.getByRole("menuitem", { name: "Fermer le projet" }).click();
+  const recent = page.getByTestId("recent-projects");
+  await recent.getByText("stock-app", { exact: true }).first().waitFor();
+  // Disposition d'une ancienne version contenant l'onglet « Architecture ».
+  await page.evaluate(() => {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i) ?? "";
+      if (!k.startsWith("nexus.layout.")) continue;
+      localStorage.setItem(
+        k,
+        JSON.stringify({
+          grid: { root: { type: "branch", data: [] }, width: 0, height: 0, orientation: "HORIZONTAL" },
+          panels: { "view:architecture": { id: "view:architecture", contentComponent: "architecture" } },
+        }),
+      );
+    }
+  });
+  await recent.getByRole("button", { name: /stock-app/ }).click();
+  await page.getByTestId("workbench").waitFor();
+  const notice = page.locator("[data-sonner-toast]", { hasText: "La vue Architecture est remplacée par Déploiement" });
+  await notice.waitFor();
+  await notice.getByRole("button", { name: "Ouvrir Déploiement" }).click();
+  await page.getByTestId("deployment-panel").waitFor();
 });
 
 test("disposition sauvegardée par projet, aucun secret en stockage local", async () => {

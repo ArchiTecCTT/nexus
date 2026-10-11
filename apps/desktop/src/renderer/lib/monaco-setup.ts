@@ -116,48 +116,81 @@ export function languageFor(path: string): string {
 
 export { monaco };
 
-// Thèmes de l'éditeur accordés aux thèmes de l'interface.
-monaco.editor.defineTheme("nexus-dark", {
-  base: "vs-dark",
-  inherit: true,
-  rules: [
-    { token: "comment", foreground: "6b7286", fontStyle: "italic" },
-    { token: "keyword", foreground: "c792ea" },
-    { token: "string", foreground: "a5d6a7" },
-    { token: "number", foreground: "f78c6c" },
-    { token: "type", foreground: "82aaff" },
-  ],
-  colors: {
-    "editor.background": "#0e1016",
-    "editor.lineHighlightBackground": "#ffffff08",
-    "editorLineNumber.foreground": "#3d4252",
-    "editorLineNumber.activeForeground": "#9aa1b2",
-    "editorGutter.background": "#0e1016",
-    "editor.selectionBackground": "#7c6cff40",
-    "editorCursor.foreground": "#a598ff",
-    "editorIndentGuide.background1": "#ffffff0d",
-    "editorWidget.background": "#151821",
-    "editorWidget.border": "#ffffff14",
-    "minimap.background": "#0e1016",
-    "scrollbarSlider.background": "#ffffff14",
-    "scrollbarSlider.hoverBackground": "#ffffff22",
-    "diffEditor.insertedTextBackground": "#3fb95026",
-    "diffEditor.removedTextBackground": "#f8514926",
-  },
-});
-monaco.editor.defineTheme("nexus-light", {
-  base: "vs",
-  inherit: true,
-  rules: [{ token: "comment", foreground: "8a8f9c", fontStyle: "italic" }],
-  colors: {
-    "editor.background": "#ffffff",
-    "editor.lineHighlightBackground": "#0000000a",
-    "editorLineNumber.foreground": "#b5b9c4",
-    "editor.selectionBackground": "#7c6cff33",
-    "editorCursor.foreground": "#5b4cf0",
-  },
-});
+// Thèmes de l'éditeur générés à partir des jetons CSS du thème courant (Monaco n'accepte que des couleurs
+// littérales : on lit les jetons au moment d'appliquer le thème et on les convertit en hexadécimal).
+let probe: HTMLSpanElement | undefined;
+
+/** Couleur CSS quelconque (jeton, rgba, color-mix…) → « rrggbb » ou « rrggbbaa », via le moteur de rendu. */
+function cssToHex(value: string): string | undefined {
+  if (!value || typeof document === "undefined") return undefined;
+  probe ??= Object.assign(document.createElement("span"), { hidden: true });
+  if (!probe.isConnected) document.body.appendChild(probe);
+  probe.style.color = "";
+  probe.style.color = value;
+  const m = getComputedStyle(probe).color.match(/rgba?\(([^)]+)\)/);
+  if (!m?.[1]) return undefined;
+  const [r = 0, g = 0, b = 0, a = 1] = m[1]
+    .split(/[\s,/]+/)
+    .filter(Boolean)
+    .map(Number);
+  const hex = (n: number) =>
+    Math.round(Math.max(0, Math.min(255, n)))
+      .toString(16)
+      .padStart(2, "0");
+  return `${hex(r)}${hex(g)}${hex(b)}${a < 1 ? hex(a * 255) : ""}`;
+}
+
+function token(name: string, alpha?: number): string | undefined {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (!v) return undefined;
+  return cssToHex(alpha === undefined ? v : `color-mix(in srgb, ${v} ${Math.round(alpha * 100)}%, transparent)`);
+}
+
+function defineThemeFromTokens(name: string, base: "vs" | "vs-dark"): void {
+  const c = (n: string, alpha?: number) => {
+    const h = token(n, alpha);
+    return h ? `#${h}` : undefined;
+  };
+  const colors: Record<string, string | undefined> = {
+    "editor.background": c("--surface"),
+    "editor.foreground": c("--fg"),
+    "editor.lineHighlightBackground": c("--hover"),
+    "editorLineNumber.foreground": c("--fg-subtle"),
+    "editorLineNumber.activeForeground": c("--fg-muted"),
+    "editorGutter.background": c("--surface"),
+    "editor.selectionBackground": c("--accent", 0.28),
+    "editor.inactiveSelectionBackground": c("--accent", 0.14),
+    "editorCursor.foreground": c("--accent-hover"),
+    "editorIndentGuide.background1": c("--border"),
+    "editorWidget.background": c("--elevated"),
+    "editorWidget.border": c("--border-strong"),
+    "minimap.background": c("--surface"),
+    "scrollbarSlider.background": c("--border-strong"),
+    "scrollbarSlider.hoverBackground": c("--fg-subtle", 0.4),
+    "diffEditor.insertedTextBackground": c("--success-soft"),
+    "diffEditor.removedTextBackground": c("--danger-soft"),
+  };
+  const rule = (tokenName: string, cssVar: string, fontStyle?: string) => {
+    const h = token(cssVar);
+    return h ? [{ token: tokenName, foreground: h.slice(0, 6), ...(fontStyle && { fontStyle }) }] : [];
+  };
+  monaco.editor.defineTheme(name, {
+    base,
+    inherit: true,
+    rules: [
+      ...rule("comment", "--fg-subtle", "italic"),
+      ...rule("keyword", "--ic-purple"),
+      ...rule("string", "--ic-green"),
+      ...rule("number", "--ic-orange"),
+      ...rule("type", "--ic-blue"),
+    ],
+    colors: Object.fromEntries(Object.entries(colors).filter((e): e is [string, string] => Boolean(e[1]))),
+  });
+}
 
 export function applyMonacoTheme(theme: "dark" | "light"): void {
-  monaco.editor.setTheme(theme === "dark" ? "nexus-dark" : "nexus-light");
+  const name = theme === "dark" ? "nexus-dark" : "nexus-light";
+  // Les jetons dépendent de data-theme (déjà posé par le store) : thème régénéré à chaque changement.
+  defineThemeFromTokens(name, theme === "dark" ? "vs-dark" : "vs");
+  monaco.editor.setTheme(name);
 }

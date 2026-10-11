@@ -1,13 +1,17 @@
-// Terminal interactif réel (PTY du main) dans un panneau : saisie transmise (`terminal.write`), taille exacte
-// (`terminal.resize` après ajustement), rendu WebGL si possible (repli DOM), recherche (Ctrl+F), liens repérés mais
-// jamais ouverts dans une fenêtre externe (copiés dans le presse-papiers). Fermer le panneau tue le processus.
+// Terminal interactif réel (PTY du main) dans un onglet du panneau bas, comme dans VS Code :
+// - un onglet peut contenir plusieurs volets scindés côte à côte (Ctrl+Maj+5), chacun avec son propre PTY ;
+// - saisie transmise (`terminal.write`), taille exacte (`terminal.resize` après ajustement, sans scintillement) ;
+// - recherche (Ctrl+F), copier/coller (Ctrl+Maj+C / Ctrl+Maj+V), effacer (Ctrl+K), liens copiés (jamais ouverts) ;
+// - quand le shell se termine, le volet se ferme (l'onglet aussi s'il était seul) ; un terminal d'agent reste
+//   affiché avec son code de sortie pour relire la fin de la session.
+// Les couleurs viennent des jetons CSS (--term-*), donc des thèmes clair et sombre.
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, ArrowUp, Eraser, Pencil, PlugZap, RotateCcw, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Columns2, Eraser, Pencil, PlugZap, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { call, isUnavailable } from "../api.ts";
@@ -15,44 +19,44 @@ import { tNow, useT } from "../i18n/index.ts";
 import { errorText } from "../lib/actions.ts";
 import { useAppStore } from "../stores/app.ts";
 import { useProjectStore } from "../stores/project.ts";
-import { terminalBus, useTerminalsStore } from "../stores/terminals.ts";
-import { Button, EmptyState, IconButton } from "../ui/primitives.tsx";
+import { terminalBus, terminalControls, terminalPanels, useTerminalsStore } from "../stores/terminals.ts";
+import { Button, EmptyState, IconButton, cx } from "../ui/primitives.tsx";
 import type { PanelProps } from "../workbench/DockHost.tsx";
-import { getDock } from "../workbench/dock.ts";
+import { getDock, type PanelParams } from "../workbench/dock.ts";
 
-function cssVar(name: string, fallback: string): string {
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v || fallback;
+function cssVar(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-function terminalTheme(): ITheme {
-  const dark = document.documentElement.dataset.theme !== "light";
+/** Thème xterm lu dans les jetons CSS du thème courant. */
+export function terminalTheme(): ITheme {
+  const v = (n: string) => cssVar(`--term-${n}`) || undefined;
   return {
-    background: cssVar("--term-bg", dark ? "#0b0d12" : "#ffffff"),
-    foreground: cssVar("--term-fg", dark ? "#d7dae3" : "#1b1e27"),
-    cursor: cssVar("--accent", "#7c6cff"),
-    cursorAccent: cssVar("--term-bg", "#0b0d12"),
-    selectionBackground: dark ? "#7c6cff55" : "#7c6cff33",
-    black: dark ? "#1b1e27" : "#2e3440",
-    red: "#f7768e",
-    green: dark ? "#9ece6a" : "#2e7d32",
-    yellow: dark ? "#e0af68" : "#a36a00",
-    blue: "#7aa2f7",
-    magenta: "#bb9af7",
-    cyan: dark ? "#7dcfff" : "#00838f",
-    white: dark ? "#c0caf5" : "#4c566a",
-    brightBlack: "#565f89",
-    brightRed: "#ff7a93",
-    brightGreen: "#b9f27c",
-    brightYellow: "#ff9e64",
-    brightBlue: "#7da6ff",
-    brightMagenta: "#c4a7e7",
-    brightCyan: "#a4daff",
-    brightWhite: dark ? "#ffffff" : "#1b1e27",
+    background: v("bg"),
+    foreground: v("fg"),
+    cursor: cssVar("--accent") || undefined,
+    cursorAccent: v("bg"),
+    selectionBackground: v("selection"),
+    black: v("black"),
+    red: v("red"),
+    green: v("green"),
+    yellow: v("yellow"),
+    blue: v("blue"),
+    magenta: v("magenta"),
+    cyan: v("cyan"),
+    white: v("white"),
+    brightBlack: v("bright-black"),
+    brightRed: v("bright-red"),
+    brightGreen: v("bright-green"),
+    brightYellow: v("bright-yellow"),
+    brightBlue: v("bright-blue"),
+    brightMagenta: v("bright-magenta"),
+    brightCyan: v("bright-cyan"),
+    brightWhite: v("bright-white"),
   };
 }
 
-async function copyText(text: string): Promise<void> {
+export async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -65,7 +69,35 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-export function TerminalPanel({ params, api, panelId }: PanelProps) {
+export const TERMINAL_FONT = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace";
+
+interface PaneProps {
+  paneKey: string;
+  panelId: string;
+  params: PanelParams;
+  panelApi: PanelProps["api"];
+  /** Seul le premier volet se rattache au PTY d'un agent ; les volets ajoutés ouvrent un shell. */
+  attach: boolean;
+  focused: boolean;
+  closable: boolean;
+  onFocus(): void;
+  /** Le shell (non rattaché) s'est terminé : le parent ferme le volet. */
+  onShellExit(): void;
+  onClose(): void;
+}
+
+function TerminalPane({
+  paneKey,
+  panelId,
+  params,
+  panelApi,
+  attach,
+  focused,
+  closable,
+  onFocus,
+  onShellExit,
+  onClose,
+}: PaneProps) {
   const t = useT();
   const host = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -79,25 +111,37 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
   };
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [renaming, setRenaming] = useState(false);
-  const info = useTerminalsStore((s) => s.byPanel[panelId]);
+  const info = useTerminalsStore((s) => s.byPanel[paneKey]);
   const upsert = useTerminalsStore((s) => s.upsert);
   const remove = useTerminalsStore((s) => s.remove);
   const projectId = useProjectStore((s) => s.current?.projectId);
   const theme = useAppStore((s) => s.resolvedTheme);
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
+  const exitRef = useRef(onShellExit);
+  exitRef.current = onShellExit;
 
-  useEffect(() => () => remove(panelId), [panelId, remove]);
+  useEffect(() => () => remove(paneKey), [paneKey, remove]);
 
   useEffect(() => {
     if (termRef.current) termRef.current.options.theme = terminalTheme();
   }, [theme]);
 
   useEffect(() => {
+    if (focused) requestAnimationFrame(() => termRef.current?.focus());
+  }, [focused]);
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInput.current?.select());
+  }, []);
+
+  useEffect(() => {
     if (!host.current) return;
     let disposed = false;
     let terminalId: string | undefined;
     const term = new Terminal({
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace",
+      fontFamily: TERMINAL_FONT,
       fontSize: 13,
       lineHeight: 1.2,
       cursorBlink: true,
@@ -132,23 +176,49 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const mod = e.ctrlKey || e.metaKey;
-      if (mod && !e.shiftKey && e.key.toLowerCase() === "f") {
-        setSearchOpen(true);
-        requestAnimationFrame(() => searchInput.current?.select());
+      if (mod && !e.shiftKey && !e.altKey && e.code === "KeyF") {
+        openSearch();
         return false;
       }
-      if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
+      if (mod && e.shiftKey && e.code === "KeyC") {
         const sel = term.getSelection();
         if (sel) void copyText(sel);
         return false;
       }
       // Ctrl+Maj+V : collage natif du navigateur (événement paste reçu par le terminal).
-      if (mod && e.shiftKey && e.key.toLowerCase() === "v") return false;
+      if (mod && e.shiftKey && e.code === "KeyV") return false;
+      // Ctrl+K (Cmd+K) : effacer le terminal, comme dans VS Code.
+      if (mod && !e.shiftKey && !e.altKey && e.code === "KeyK") {
+        term.clear();
+        return false;
+      }
       return true;
     });
+    const controls = {
+      copySelection: () => {
+        const sel = term.getSelection();
+        if (sel) void copyText(sel);
+      },
+      paste: () => {
+        term.focus();
+        // Lecture du presse-papiers refusée par la politique de permissions : collage natif sur la zone du terminal.
+        document.execCommand("paste");
+      },
+      clear: () => term.clear(),
+      focus: () => term.focus(),
+      search: openSearch,
+      restart,
+    };
+    terminalControls.set(paneKey, controls);
 
+    // Ajustement à la taille du volet : regroupé par image, ignoré tant que le volet est masqué (pas de saut).
+    let lastSize = "";
     const doFit = () => {
-      if (disposed || !host.current || host.current.clientWidth < 10 || host.current.clientHeight < 10) return;
+      const el = host.current;
+      if (disposed || !el || el.clientWidth < 10 || el.clientHeight < 10) return;
+      const size = `${el.clientWidth}x${el.clientHeight}`;
+      if (size === lastSize) return;
+      lastSize = size;
       try {
         fit.fit();
       } catch {
@@ -163,7 +233,7 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
     observer.observe(host.current);
     doFit();
 
-    upsert(panelId, { status: "starting", title: api.title ?? t("term.title") });
+    upsert(paneKey, { status: "starting", title: panelApi.title ?? t("term.title") });
     const dataSub = term.onData((data) => {
       if (terminalId) void call("terminal.write", { terminalId, data }).catch(() => {});
     });
@@ -175,12 +245,12 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
     const cwd = typeof params.cwd === "string" && params.cwd ? params.cwd : undefined;
     // Terminal d'une session interactive (agent lancé par le main dans un PTY) : on s'y rattache au lieu d'en créer un.
     const attachTo =
-      generation === 0 && typeof params.attachTerminalId === "string" ? params.attachTerminalId : undefined;
+      attach && generation === 0 && typeof params.attachTerminalId === "string" ? params.attachTerminalId : undefined;
     const attached = attachTo !== undefined;
     const ready = attachTo
       ? Promise.resolve({ terminalId: attachTo, shell: String(params.label ?? ""), cwd: cwd ?? "" })
       : !projectId
-        ? Promise.reject(new Error("Ouvrez un projet pour utiliser le terminal"))
+        ? Promise.reject(new Error(tNow("term.noProject")))
         : call("terminal.create", {
             projectId,
             ...(cwd && { cwd }),
@@ -190,43 +260,52 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
     void ready.then(
       (r) => {
         if (disposed) {
-          void call("terminal.kill", { terminalId: r.terminalId }).catch(() => {});
+          // Panneau démonté avant d'être prêt (ex. double montage de React en développement) : un terminal créé ici
+          // est libéré ; celui d'un agent (rattaché) ne doit JAMAIS être tué ainsi, sinon l'agent meurt aussitôt.
+          if (!attached) void call("terminal.kill", { terminalId: r.terminalId }).catch(() => {});
           return;
         }
         terminalId = r.terminalId;
-        upsert(panelId, { terminalId: r.terminalId, status: "running", shell: r.shell, cwd: r.cwd });
+        upsert(paneKey, { terminalId: r.terminalId, status: "running", shell: r.shell, cwd: r.cwd });
         detach = terminalBus.attach(
           r.terminalId,
           (data) => term.write(data),
           (code) => {
-            upsert(panelId, { status: "exited", exitCode: code });
+            upsert(paneKey, { status: "exited", exitCode: code });
             term.write(`\r\n\x1b[2m${tNow("term.exited", { code: code ?? "?" })}\x1b[0m\r\n`);
+            // Shell quitté (exit, Ctrl+D) : le volet se ferme, comme dans VS Code. Un agent reste lisible.
+            if (!attached && !restarting.current) exitRef.current();
           },
         );
+        lastSize = "";
         doFit();
         void call("terminal.resize", { terminalId: r.terminalId, cols: term.cols, rows: term.rows }).catch(() => {});
-        if (api.isActive) term.focus();
+        if (panelApi.isActive && focusedRef.current) term.focus();
       },
       (e: unknown) => {
         if (disposed) return;
-        upsert(panelId, { status: isUnavailable(e) ? "unavailable" : "error" });
+        upsert(paneKey, { status: isUnavailable(e) ? "unavailable" : "error" });
         if (!isUnavailable(e)) term.write(`\x1b[31m${errorText(e)}\x1b[0m\r\n`);
       },
     );
 
-    const activeSub = api.onDidActiveChange((e) => {
+    const activeSub = panelApi.onDidActiveChange((e) => {
       if (e.isActive)
         requestAnimationFrame(() => {
           doFit();
-          term.focus();
+          if (focusedRef.current) term.focus();
         });
     });
-    const visSub = api.onDidVisibilityChange((e) => {
-      if (e.isVisible) requestAnimationFrame(doFit);
+    const visSub = panelApi.onDidVisibilityChange((e) => {
+      if (e.isVisible) {
+        lastSize = "";
+        requestAnimationFrame(doFit);
+      }
     });
 
     return () => {
       disposed = true;
+      if (terminalControls.get(paneKey) === controls) terminalControls.delete(paneKey);
       cancelAnimationFrame(raf);
       observer.disconnect();
       dataSub.dispose();
@@ -246,18 +325,20 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
     };
     // Recréé uniquement au redémarrage explicite (generation) ; les paramètres initiaux suffisent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generation, panelId]);
+  }, [generation, paneKey]);
 
   const find = useCallback(
     (dir: "next" | "prev") => {
       if (!query) return;
+      const accent = cssVar("--accent");
+      const warn = cssVar("--warning");
       const opts = {
         incremental: dir === "next",
         decorations: {
-          matchOverviewRuler: "#e0af68",
-          activeMatchColorOverviewRuler: "#7c6cff",
-          matchBackground: "#e0af6855",
-          activeMatchBackground: "#7c6cff88",
+          matchOverviewRuler: warn,
+          activeMatchColorOverviewRuler: accent,
+          matchBackground: cssVar("--term-match"),
+          activeMatchBackground: cssVar("--term-match-active"),
         },
       };
       if (dir === "next") searchRef.current?.findNext(query, opts);
@@ -272,52 +353,24 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
     termRef.current?.focus();
   };
 
-  const rename = (name: string) => {
-    const clean = name.trim().slice(0, 60);
-    if (clean) {
-      api.setTitle(clean);
-      api.updateParameters({ label: clean });
-      upsert(panelId, { title: clean });
-    }
-    setRenaming(false);
-  };
-
   return (
-    <div className="panel-fill terminal-panel" data-testid="terminal-panel">
-      <div className="terminal-toolbar">
-        {renaming ? (
-          <input
-            className="input input-sm w-40"
-            defaultValue={api.title}
-            autoFocus
-            aria-label={t("term.rename")}
-            onBlur={(e) => rename(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") rename(e.currentTarget.value);
-              if (e.key === "Escape") setRenaming(false);
-            }}
-          />
-        ) : (
-          <span className="text-[11px] text-fg-subtle truncate" title={info?.cwd}>
-            {info?.shell ? `${info.shell.split("/").pop()} · ` : ""}
-            {info?.cwd ?? ""}
+    <div
+      className={cx("terminal-pane", focused && "is-focused")}
+      data-testid="terminal-pane"
+      onMouseDown={onFocus}
+      onFocusCapture={onFocus}
+    >
+      {closable && (
+        <div className="terminal-pane-head">
+          <span className="truncate">
+            {info?.shell ? info.shell.split("/").pop() : t("term.title")}
+            {info?.status === "exited" ? ` · ${t("term.exitedShort")}` : ""}
           </span>
-        )}
-        <div className="ml-auto flex items-center gap-0.5">
-          <IconButton size="sm" label={t("term.search")} shortcut="mod+f" onClick={() => setSearchOpen(true)}>
-            <Search size={13} />
-          </IconButton>
-          <IconButton size="sm" label={t("term.rename")} onClick={() => setRenaming(true)}>
-            <Pencil size={13} />
-          </IconButton>
-          <IconButton size="sm" label={t("term.clear")} onClick={() => termRef.current?.clear()}>
-            <Eraser size={13} />
-          </IconButton>
-          <IconButton size="sm" label={t("term.restart")} onClick={restart}>
-            <RotateCcw size={13} />
+          <IconButton size="sm" label={t("term.killPane")} onClick={onClose}>
+            <X size={12} />
           </IconButton>
         </div>
-      </div>
+      )}
       {searchOpen && (
         <div className="terminal-search" role="search">
           <input
@@ -371,6 +424,133 @@ export function TerminalPanel({ params, api, panelId }: PanelProps) {
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+export function TerminalPanel({ params, api, panelId }: PanelProps) {
+  const t = useT();
+  const seq = useRef(1);
+  const [panes, setPanes] = useState<string[]>([panelId]);
+  const [focusedPane, setFocusedPane] = useState(panelId);
+  const [renaming, setRenaming] = useState(false);
+  const focusedInfo = useTerminalsStore((s) => s.byPanel[focusedPane]);
+  const panesRef = useRef(panes);
+  panesRef.current = panes;
+  const focusedRef = useRef(focusedPane);
+  focusedRef.current = focusedPane;
+
+  const closePanel = useCallback(() => getDock()?.getPanel(panelId)?.api.close(), [panelId]);
+
+  const split = useCallback(() => {
+    if (panesRef.current.length >= 4) return;
+    const key = `${panelId}~${++seq.current}`;
+    setPanes((p) => [...p, key]);
+    setFocusedPane(key);
+  }, [panelId]);
+
+  const closePane = useCallback(
+    (key: string) => {
+      const rest = panesRef.current.filter((k) => k !== key);
+      if (rest.length === 0) {
+        closePanel();
+        return;
+      }
+      setPanes(rest);
+      if (focusedRef.current === key) setFocusedPane(rest[rest.length - 1] ?? panelId);
+    },
+    [closePanel, panelId],
+  );
+
+  // Commandes globales (palette, raccourcis) : agissent sur le volet focalisé de cet onglet.
+  useEffect(() => {
+    const focused = () => terminalControls.get(focusedRef.current);
+    terminalControls.set(`${panelId}#panel`, {
+      copySelection: () => focused()?.copySelection(),
+      paste: () => focused()?.paste(),
+      clear: () => focused()?.clear(),
+      focus: () => focused()?.focus(),
+      search: () => focused()?.search(),
+      restart: () => focused()?.restart(),
+    });
+    terminalPanels.set(panelId, { split, killFocused: () => closePane(focusedRef.current) });
+    return () => {
+      terminalControls.delete(`${panelId}#panel`);
+      terminalPanels.delete(panelId);
+    };
+  }, [panelId, split, closePane]);
+
+  const rename = (name: string) => {
+    const clean = name.trim().slice(0, 60);
+    if (clean) {
+      api.setTitle(clean);
+      api.updateParameters({ label: clean });
+      useTerminalsStore.getState().upsert(panelId, { title: clean });
+    }
+    setRenaming(false);
+  };
+
+  const focusedControls = () => terminalControls.get(focusedPane);
+
+  return (
+    <div className="panel-fill terminal-panel" data-testid="terminal-panel">
+      <div className="terminal-toolbar">
+        {renaming ? (
+          <input
+            className="input input-sm w-40"
+            defaultValue={api.title}
+            autoFocus
+            aria-label={t("term.rename")}
+            onBlur={(e) => rename(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") rename(e.currentTarget.value);
+              if (e.key === "Escape") setRenaming(false);
+            }}
+          />
+        ) : (
+          <span className="text-[11px] text-fg-subtle truncate" title={focusedInfo?.cwd}>
+            {focusedInfo?.shell ? `${focusedInfo.shell.split("/").pop()} · ` : ""}
+            {focusedInfo?.cwd ?? ""}
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-0.5">
+          <IconButton size="sm" label={t("term.search")} shortcut="mod+f" onClick={() => focusedControls()?.search()}>
+            <Search size={13} />
+          </IconButton>
+          <IconButton size="sm" label={t("term.rename")} onClick={() => setRenaming(true)}>
+            <Pencil size={13} />
+          </IconButton>
+          <IconButton size="sm" label={t("term.clear")} shortcut="mod+k" onClick={() => focusedControls()?.clear()}>
+            <Eraser size={13} />
+          </IconButton>
+          <IconButton size="sm" label={t("term.restart")} onClick={() => focusedControls()?.restart()}>
+            <RotateCcw size={13} />
+          </IconButton>
+          <IconButton size="sm" label={t("cmd.splitTerminal")} shortcut="mod+shift+5" onClick={split}>
+            <Columns2 size={13} />
+          </IconButton>
+          <IconButton size="sm" label={t("term.killPane")} onClick={() => closePane(focusedPane)}>
+            <Trash2 size={13} />
+          </IconButton>
+        </div>
+      </div>
+      <div className={cx("terminal-panes", panes.length > 1 && "is-split")}>
+        {panes.map((key, i) => (
+          <TerminalPane
+            key={key}
+            paneKey={key}
+            panelId={panelId}
+            params={params}
+            panelApi={api}
+            attach={i === 0 && key === panelId}
+            focused={focusedPane === key}
+            closable={panes.length > 1}
+            onFocus={() => setFocusedPane(key)}
+            onShellExit={() => closePane(key)}
+            onClose={() => closePane(key)}
+          />
+        ))}
+      </div>
     </div>
   );
 }

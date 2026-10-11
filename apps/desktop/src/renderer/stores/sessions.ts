@@ -6,6 +6,7 @@ import { call } from "../api.ts";
 import type { IpcResponse } from "@nexus/contracts";
 import type { DiffDto, Res, SessionMode, SessionSummary } from "../types.ts";
 import type { QuotaEvent } from "../lib/quota.ts";
+import { useMissionsStore } from "./missions.ts";
 import { done, failed, pending } from "./util.ts";
 
 export interface SandboxDenial {
@@ -30,6 +31,13 @@ interface SessionsState {
   setLive(taskId: string, status: LiveStatus): void;
   /** Dernier quota connu par agent (connectorId). */
   quotas: Record<string, QuotaEvent>;
+  /** Sessions lancées en mode Terminal (TUI) depuis cette fenêtre (indicateur local, complète `terminalId`). */
+  interactive: Record<string, true>;
+  /** Messages envoyés après la consigne initiale (affichés dans le fil à l'endroit où ils ont été envoyés). */
+  followUps: Record<string, Array<{ text: string; at: number; afterEntries: number }>>;
+  /** Supprime une session terminée (`sessions.delete`) ; refusée par le main si elle est en cours. */
+  remove(taskId: string): Promise<void>;
+  markInteractive(taskId: string): void;
   /** Connexions refusées par la sandbox, par tâche ("" si non rattachée), les plus récentes d'abord. */
   denials: Record<string, SandboxDenial[]>;
   addDenial(taskId: string | undefined, d: { target: string; reason: string }): void;
@@ -61,6 +69,11 @@ interface SessionsState {
 }
 
 export const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_input"]);
+/** Statuts finaux : l'état en direct (activité du terminal) n'est plus affiché par-dessus. */
+export const FINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
+/** État en direct à afficher pour une session (rien si elle est terminée ou si l'état est « done »). */
+export const shownLive = (status: string, live: LiveStatus | undefined): LiveStatus | undefined =>
+  live && live !== "done" && !FINAL_STATUSES.has(status) ? live : undefined;
 
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
   projectId: undefined,
@@ -69,6 +82,24 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   prompts: {},
   live: {},
   quotas: {},
+  interactive: {},
+  followUps: {},
+  async remove(taskId) {
+    await call("sessions.delete", { taskId });
+    set((s) => {
+      const { [taskId]: _p, ...prompts } = s.prompts;
+      const { [taskId]: _f, ...followUps } = s.followUps;
+      return {
+        prompts,
+        followUps,
+        list: s.list.data ? { ...s.list, data: s.list.data.filter((x) => x.taskId !== taskId) } : s.list,
+      };
+    });
+    void get().refresh();
+  },
+  markInteractive(taskId) {
+    set((s) => ({ interactive: { ...s.interactive, [taskId]: true } }));
+  },
   denials: {},
   addDenial(taskId, d) {
     const key = taskId ?? "";
@@ -100,6 +131,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     const prompts = { ...get().prompts };
     for (const x of r) if (x.taskId) prompts[x.taskId] = input.prompt;
     set({ prompts });
+    if (input.interactive) for (const x of r) if (x.taskId) get().markInteractive(x.taskId);
     void get().refresh();
     return r;
   },
@@ -119,6 +151,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       ...(input.title && { title: input.title }),
     });
     if (input.prompt) set((s) => ({ prompts: { ...s.prompts, [r.taskId]: input.prompt ?? "" } }));
+    get().markInteractive(r.taskId);
     void get().refresh();
     return r;
   },
@@ -156,7 +189,15 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     return taskId;
   },
   async followUp(taskId, prompt) {
+    // Position dans le fil mémorisée avant l'envoi : les événements du nouveau tour arrivent juste après.
+    const afterEntries = useMissionsStore.getState().runs[taskId]?.entries.length ?? 0;
     await call("sessions.followUp", { taskId, prompt });
+    set((s) => ({
+      followUps: {
+        ...s.followUps,
+        [taskId]: [...(s.followUps[taskId] ?? []), { text: prompt, at: Date.now(), afterEntries }],
+      },
+    }));
     void get().refresh();
   },
   async cancel(taskId) {

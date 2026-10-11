@@ -25,19 +25,24 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useT, useTd } from "../i18n/index.ts";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { call, toNexusError, type NexusError } from "../api.ts";
 import { errorText } from "../lib/actions.ts";
-import { canResume, openSessionTerminal, resumeSessionTerminal } from "../lib/agent-terminal.ts";
+import { TERMINAL_FONT, terminalTheme } from "./TerminalPanel.tsx";
+import { canResume, isInteractiveSession, openSessionTerminal, resumeSessionTerminal } from "../lib/agent-terminal.ts";
 import { allowSandboxDomain } from "../lib/sandbox-denials.ts";
 import { formatQuota, quotaTone, type QuotaEvent } from "../lib/quota.ts";
 import { usePrDialog } from "../overlays/CreatePrDialog.tsx";
 import { useMissionsStore, type RunEntry } from "../stores/missions.ts";
 import { useProjectStore } from "../stores/project.ts";
-import { ACTIVE_STATUSES, useSessionsStore } from "../stores/sessions.ts";
+import { ACTIVE_STATUSES, shownLive, useSessionsStore } from "../stores/sessions.ts";
 import type { AgentEvent } from "../types.ts";
-import { Badge, Button, EmptyState, ErrorNotice, IconButton, Kbd, Skeleton, cx } from "../ui/primitives.tsx";
+import { Badge, Button, EmptyState, ErrorNotice, IconButton, InfoTip, Kbd, Skeleton, cx } from "../ui/primitives.tsx";
 import { UnifiedDiff } from "../ui/UnifiedDiff.tsx";
 import { openDiff, openTerminal } from "../workbench/dock.ts";
 import type { PanelProps } from "../workbench/DockHost.tsx";
+import { agentName } from "../ui/AgentAvatar.tsx";
 
 // oxlint-disable-next-line no-control-regex -- retrait volontaire des séquences ANSI du texte affiché
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
@@ -48,11 +53,23 @@ type Block =
   | { kind: "stderr"; key: string; text: string }
   | { kind: "tool"; key: string; tool: string; ref: string }
   | { kind: "system"; key: string; tone: "info" | "success" | "danger"; text: string }
-  | { kind: "usage"; key: string; event: Extract<AgentEvent, { kind: "usage" }> };
+  | { kind: "usage"; key: string; event: Extract<AgentEvent, { kind: "usage" }> }
+  | { kind: "user"; key: string; text: string };
 
-function toBlocks(entries: RunEntry[], t: ReturnType<typeof useT>): Block[] {
+type FollowUp = { text: string; at: number; afterEntries: number };
+
+function toBlocks(entries: RunEntry[], t: ReturnType<typeof useT>, followUps: FollowUp[] = []): Block[] {
   const blocks: Block[] = [];
-  for (const { key, event } of entries) {
+  let fi = 0;
+  const flushUser = (index: number) => {
+    while (fi < followUps.length && (followUps[fi]?.afterEntries ?? 0) <= index) {
+      const f = followUps[fi];
+      if (f) blocks.push({ kind: "user", key: `u-${f.at}-${fi}`, text: f.text });
+      fi += 1;
+    }
+  };
+  entries.forEach(({ key, event }, index) => {
+    flushUser(index);
     const last = blocks[blocks.length - 1];
     switch (event.kind) {
       case "started":
@@ -86,7 +103,8 @@ function toBlocks(entries: RunEntry[], t: ReturnType<typeof useT>): Block[] {
         });
         break;
     }
-  }
+  });
+  flushUser(Number.POSITIVE_INFINITY);
   return blocks;
 }
 
@@ -134,6 +152,71 @@ function Collapsible({
 
 const EMPTY: RunEntry[] = [];
 
+/** Sortie enregistrée du terminal d'une session interactive terminée, relue dans un xterm en lecture seule. */
+function TranscriptView({ taskId }: { taskId: string }) {
+  const t = useT();
+  const host = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<{ loading: boolean; truncated?: boolean; empty?: boolean; error?: NexusError }>({
+    loading: true,
+  });
+  useEffect(() => {
+    let disposed = false;
+    let term: Terminal | undefined;
+    let observer: ResizeObserver | undefined;
+    void call("sessions.transcript", { taskId }).then(
+      (r) => {
+        if (disposed) return;
+        setState({ loading: false, truncated: r.truncated, empty: r.data.length === 0 });
+        if (!host.current || r.data.length === 0) return;
+        term = new Terminal({
+          disableStdin: true,
+          cursorBlink: false,
+          cursorInactiveStyle: "none",
+          fontFamily: TERMINAL_FONT,
+          fontSize: 12.5,
+          lineHeight: 1.2,
+          scrollback: 50_000,
+          convertEol: false,
+          theme: terminalTheme(),
+        });
+        const fit = new FitAddon();
+        term.loadAddon(fit);
+        term.open(host.current);
+        const doFit = () => {
+          try {
+            fit.fit();
+          } catch {
+            // pas encore dimensionné
+          }
+        };
+        doFit();
+        observer = new ResizeObserver(() => requestAnimationFrame(doFit));
+        observer.observe(host.current);
+        term.write(r.data);
+      },
+      (e: unknown) => !disposed && setState({ loading: false, error: toNexusError(e, "sessions.transcript") }),
+    );
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      term?.dispose();
+    };
+  }, [taskId]);
+
+  return (
+    <section className="transcript" aria-label={t("session.transcript")} data-testid="session-transcript">
+      <p className="transcript-title">
+        <SquareTerminal size={13} aria-hidden /> {t("session.transcript")}
+      </p>
+      {state.loading && <Skeleton lines={4} />}
+      <ErrorNotice error={state.error} compact />
+      {state.empty && <p className="text-[12px] text-fg-subtle">{t("session.transcriptEmpty")}</p>}
+      {state.truncated && <p className="text-[11.5px] text-fg-subtle mb-1">{t("session.transcriptTruncated")}</p>}
+      <div ref={host} className={cx("transcript-host", (state.loading || state.empty || state.error) && "hidden")} />
+    </section>
+  );
+}
+
 export function SessionPanel({ params, api }: PanelProps) {
   const t = useT();
   const td = useTd();
@@ -142,7 +225,7 @@ export function SessionPanel({ params, api }: PanelProps) {
   const [resuming, setResuming] = useState(false);
   const localPrompt = useSessionsStore((s) => s.prompts[taskId]);
   const diff = useSessionsStore((s) => s.diffs[taskId]);
-  const live = useSessionsStore((s) => s.live[taskId]);
+  const rawLive = useSessionsStore((s) => s.live[taskId]);
   const { cancel, followUp, review, loadDiff, refresh } = useSessionsStore.getState();
   const stream = useMissionsStore((s) => s.runs[taskId]);
   const loadRun = useMissionsStore((s) => s.loadRun);
@@ -168,9 +251,19 @@ export function SessionPanel({ params, api }: PanelProps) {
     }
     return undefined;
   }, [entries]);
-  const blocks = useMemo(() => toBlocks(entries, t), [entries, t]);
+  const followUps = useSessionsStore((s) => s.followUps[taskId]);
+  const blocks = useMemo(() => toBlocks(entries, t, followUps), [entries, t, followUps]);
   const status = session?.status ?? "unknown";
   const active = ACTIVE_STATUSES.has(status);
+  const live = shownLive(status, rawLive);
+  const markedInteractive = useSessionsStore((s) => Boolean(s.interactive[taskId]));
+  // Session en mode Terminal : PTY/indicateur local, ou aucun événement de conversation alors qu'elle ne tourne plus.
+  const interactive = Boolean(
+    session &&
+    (markedInteractive ||
+      isInteractiveSession(session) ||
+      (!active && stream !== undefined && !stream.loading && !stream.error && stream.entries.length === 0)),
+  );
   const prompt = localPrompt ?? missionPrompt;
 
   useEffect(() => {
@@ -207,9 +300,12 @@ export function SessionPanel({ params, api }: PanelProps) {
     }
   };
 
+  // Envoi possible sauf pendant un tour de conversation en cours ; une session en terminal reçoit le message tapé
+  // dans son terminal, et une session terminée ou annulée repart avec ce nouveau message.
+  const composerLocked = active && !interactive;
   const send = () => {
     const text = draft.trim();
-    if (!text || active) return;
+    if (!text || composerLocked) return;
     void act("followUp", async () => {
       await followUp(taskId, text);
       setDraft("");
@@ -221,7 +317,7 @@ export function SessionPanel({ params, api }: PanelProps) {
       ? "success"
       : status === "failed"
         ? "danger"
-        : status === "waiting_review"
+        : status === "waiting_review" || status === "interrupted"
           ? "warning"
           : active
             ? "accent"
@@ -240,12 +336,12 @@ export function SessionPanel({ params, api }: PanelProps) {
               {active && <span className="live-dot" aria-hidden />}
               {td("status.", status)}
             </Badge>
-            {live && live !== "done" && (
+            {live && (
               <Badge tone={live === "needs_input" ? "warning" : live === "error" ? "danger" : "info"}>
                 {td("live.", live)}
               </Badge>
             )}
-            {session && <span className="font-mono">{session.connectorId}</span>}
+            {session && <span title={session.connectorId}>{agentName(session.connectorId)}</span>}
             {session && <span>· {td("mode.", session.mode)}</span>}
             {quota && (
               <span
@@ -396,11 +492,29 @@ export function SessionPanel({ params, api }: PanelProps) {
           )}
           {stream?.loading && entries.length === 0 && <Skeleton lines={5} />}
           <ErrorNotice error={stream?.error} />
-          {!stream?.loading && entries.length === 0 && !stream?.error && !active && (
+          {!stream?.loading && entries.length === 0 && !stream?.error && session && interactive && (
+            // Les boutons « Ouvrir le terminal de l'agent » / « Reprendre » sont déjà dans l'en-tête : pas de doublon ici.
+            <EmptyState icon={<SquareTerminal size={26} />} title={t("session.inTerminal")}>
+              {session.terminalId ? t("session.inTerminalBody") : t("session.inTerminalEnded")}
+            </EmptyState>
+          )}
+          {!stream?.loading && entries.length === 0 && !stream?.error && !active && !interactive && (
             <EmptyState icon={<Bot size={26} />} title={t("session.noEvents")} />
           )}
+          {interactive && session && !session.terminalId && !active && <TranscriptView taskId={taskId} />}
           {blocks.map((b) => {
             switch (b.kind) {
+              case "user":
+                return (
+                  <div key={b.key} className="msg msg-user">
+                    <div className="msg-avatar" aria-hidden>
+                      <User size={14} />
+                    </div>
+                    <div className="msg-bubble">
+                      <RichText text={b.text} />
+                    </div>
+                  </div>
+                );
               case "text":
                 return (
                   <div key={b.key} className="msg msg-agent">
@@ -447,7 +561,7 @@ export function SessionPanel({ params, api }: PanelProps) {
                       source: td("usage.source.", b.event.source),
                     })}
                     {b.event.usd !== undefined && ` · ~$${b.event.usd.toFixed(4)}`}
-                    {b.event.caveat && <span title={b.event.caveat}> ⓘ</span>}
+                    {b.event.caveat && <InfoTip text={b.event.caveat} />}
                   </div>
                 );
               case "system":
@@ -539,10 +653,16 @@ export function SessionPanel({ params, api }: PanelProps) {
       <footer className="composer">
         <textarea
           className="composer-input"
-          placeholder={active ? t("session.busyPlaceholder") : t("session.followUpPlaceholder")}
+          placeholder={
+            composerLocked
+              ? t("session.busyPlaceholder")
+              : interactive && session?.terminalId
+                ? t("session.followUpTerminalPlaceholder")
+                : t("session.followUpPlaceholder")
+          }
           aria-label={t("session.followUp")}
           value={draft}
-          disabled={active}
+          disabled={composerLocked}
           rows={2}
           maxLength={50_000}
           onChange={(e) => setDraft(e.target.value)}
@@ -561,7 +681,7 @@ export function SessionPanel({ params, api }: PanelProps) {
             size="sm"
             variant="primary"
             icon={<Send size={13} />}
-            disabled={active || !draft.trim()}
+            disabled={composerLocked || !draft.trim()}
             busy={busy === "followUp"}
             onClick={send}
           >

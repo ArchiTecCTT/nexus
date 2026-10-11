@@ -134,7 +134,7 @@ export function EditorPanel({ params, api }: PanelProps) {
 
   return (
     <div className="panel-fill" data-testid="editor-panel" data-path={path}>
-      <Breadcrumbs path={path}>
+      <Breadcrumbs path={params.untitled ? (api.title ?? path) : path}>
         {doc.reason === "truncated" && <Badge tone="warning">{t("editor.truncated")}</Badge>}
         {doc.readOnly && doc.reason !== "truncated" && <Badge tone="neutral">{t("editor.readOnly")}</Badge>}
         {doc.saving && <span className="text-[11px] text-fg-subtle">{t("editor.saving")}</span>}

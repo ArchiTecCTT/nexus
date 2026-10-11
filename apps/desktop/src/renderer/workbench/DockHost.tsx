@@ -5,11 +5,14 @@ import type { DockviewGroupPanel, DockviewPanelApi } from "dockview";
 import {
   Bot,
   ChevronDown,
+  ChevronUp,
   Columns2,
+  Trash2,
   FileSearch,
   Maximize2,
   Minimize2,
   Network,
+  Orbit,
   Plus,
   Rocket,
   Settings,
@@ -19,7 +22,10 @@ import {
   X,
   GitCompare,
   Command as CommandIcon,
-  ListChecks,
+  CloudUpload,
+  Gauge,
+  ScrollText,
+  Keyboard,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, type ComponentType, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -27,17 +33,19 @@ import { useT } from "../i18n/index.ts";
 import { FileIcon } from "../lib/file-icons.tsx";
 import { runCommand } from "../lib/commands.ts";
 import { useEditorsStore } from "../stores/editors.ts";
-import { useSessionsStore, ACTIVE_STATUSES } from "../stores/sessions.ts";
+import { ACTIVE_STATUSES, shownLive, useSessionsStore } from "../stores/sessions.ts";
 import { useTerminalsStore } from "../stores/terminals.ts";
 import { Kbd, Skeleton, cx } from "../ui/primitives.tsx";
 import {
   getDock,
+  killActiveTerminal,
   mountDock,
   openTerminal,
   pinPanel,
   requestClose,
   splitPanel,
   tabMenuItems,
+  toggleBottomMaximize,
   toggleBottomPanel,
   toggleMaximize,
   useDockState,
@@ -58,11 +66,16 @@ export interface PanelProps {
   panelId: string;
 }
 
-// Vues secondaires chargées à la demande (Mermaid, graphe, réglages) : démarrage plus léger.
+// Vues secondaires chargées à la demande (graphe, réglages, déploiement) : démarrage plus léger.
 const MissionPanel = lazy(() => import("../panels/MissionPanel.tsx").then((m) => ({ default: m.MissionPanel })));
 const SettingsPanel = lazy(() => import("../panels/SettingsPanel.tsx").then((m) => ({ default: m.SettingsPanel })));
-const ArchitecturePanel = lazy(() =>
-  import("../panels/ArchitecturePanel.tsx").then((m) => ({ default: m.ArchitecturePanel })),
+const ShortcutsPanel = lazy(() => import("../panels/ShortcutsPanel.tsx").then((m) => ({ default: m.ShortcutsPanel })));
+const AgentOutputPanel = lazy(() => import("../panels/BottomViews.tsx").then((m) => ({ default: m.AgentOutputPanel })));
+const LogPanel = lazy(() => import("../panels/BottomViews.tsx").then((m) => ({ default: m.LogPanel })));
+const OrchestraPanel = lazy(() => import("../panels/OrchestraPanel.tsx").then((m) => ({ default: m.OrchestraPanel })));
+const UsagePanel = lazy(() => import("../panels/UsagePanel.tsx").then((m) => ({ default: m.UsagePanel })));
+const DeploymentPanel = lazy(() =>
+  import("../panels/DeploymentPanel.tsx").then((m) => ({ default: m.DeploymentPanel })),
 );
 const DeliveryPanel = lazy(() => import("../panels/DeliveryPanel.tsx").then((m) => ({ default: m.DeliveryPanel })));
 const ApprovalsPanel = lazy(() => import("../panels/ApprovalsPanel.tsx").then((m) => ({ default: m.ApprovalsPanel })));
@@ -75,7 +88,12 @@ const PANELS: Record<PanelComponent, ComponentType<PanelProps>> = {
   session: SessionPanel,
   mission: MissionPanel,
   settings: SettingsPanel,
-  architecture: ArchitecturePanel,
+  usage: UsagePanel,
+  orchestra: OrchestraPanel,
+  agentOutput: AgentOutputPanel,
+  log: LogPanel,
+  shortcuts: ShortcutsPanel,
+  deployment: DeploymentPanel,
   delivery: DeliveryPanel,
   approvals: ApprovalsPanel,
   teams: TeamsPanel,
@@ -86,7 +104,12 @@ const VIEW_ICONS: Partial<Record<PanelComponent, typeof Bot>> = {
   session: Bot,
   mission: Network,
   settings: Settings,
-  architecture: ListChecks,
+  usage: Gauge,
+  orchestra: Orbit,
+  agentOutput: Bot,
+  log: ScrollText,
+  shortcuts: Keyboard,
+  deployment: CloudUpload,
   delivery: Rocket,
   approvals: ShieldCheck,
   teams: Users,
@@ -126,11 +149,18 @@ function PanelTab({ entry }: { entry: PortalEntry }) {
   const title = useTitle(api);
   const path = entry.params.path;
   const dirty = useEditorsStore((s) => (entry.component === "editor" && path ? Boolean(s.docs[path]?.dirty) : false));
-  const sessionActive = useSessionsStore((s) =>
-    entry.component === "session"
-      ? ACTIVE_STATUSES.has(s.list.data?.find((x) => x.taskId === entry.params.taskId)?.status ?? "")
-      : false,
-  );
+  // Session ou terminal d'agent : pastille d'activité (travaille, attend une réponse, en pause, erreur).
+  const agentTaskId = entry.component === "session" || entry.component === "terminal" ? entry.params.taskId : undefined;
+  const agentDot = useSessionsStore((s) => {
+    if (!agentTaskId) return undefined;
+    const status = s.list.data?.find((x) => x.taskId === agentTaskId)?.status ?? "";
+    const live = shownLive(status, s.live[agentTaskId]);
+    if (live === "needs_input") return "warning";
+    if (live === "error") return "danger";
+    if (live === "working" || live === "starting" || (!live && ACTIVE_STATUSES.has(status))) return "working";
+    if (live === "idle") return "idle";
+    return undefined;
+  });
   const termExited = useTerminalsStore((s) =>
     entry.component === "terminal" && entry.panelId ? s.byPanel[entry.panelId]?.status === "exited" : false,
   );
@@ -162,7 +192,14 @@ function PanelTab({ entry }: { entry: PortalEntry }) {
             <Icon size={14} className="shrink-0 text-fg-muted" aria-hidden />
           ) : null}
           <span className={cx("tab-title", termExited && "line-through opacity-60")}>{title}</span>
-          {sessionActive && <span className="live-dot" aria-label={t("session.live")} />}
+          {agentDot && (
+            <span
+              className={cx("agent-dot", `agent-dot-${agentDot}`)}
+              role="img"
+              aria-label={t(`tabDot.${agentDot}`)}
+              data-testid="tab-agent-dot"
+            />
+          )}
           <button
             type="button"
             className="tab-close"
@@ -196,6 +233,7 @@ function PanelTab({ entry }: { entry: PortalEntry }) {
 function GroupActions({ group }: { group: DockviewGroupPanel }) {
   const t = useT();
   const maximized = useDockState((s) => s.maximized);
+  const bottomMax = useDockState((s) => s.bottomMaximized);
   const [isEdge, setEdge] = useState(group.api.location.type === "edge");
   useEffect(() => {
     const d = group.api.onDidLocationChange((e) => setEdge(e.location.type === "edge"));
@@ -226,11 +264,30 @@ function GroupActions({ group }: { group: DockviewGroupPanel }) {
         <button
           type="button"
           className="icon-btn icon-btn-sm"
+          aria-label={t("term.killPane")}
+          title={t("term.killPane")}
+          onClick={() => killActiveTerminal()}
+        >
+          <Trash2 size={14} />
+        </button>
+        <span className="group-actions-sep" aria-hidden />
+        <button
+          type="button"
+          className="icon-btn icon-btn-sm"
+          aria-label={bottomMax ? t("bottom.restore") : t("bottom.maximize")}
+          title={bottomMax ? t("bottom.restore") : t("bottom.maximize")}
+          onClick={() => toggleBottomMaximize()}
+        >
+          {bottomMax ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        </button>
+        <button
+          type="button"
+          className="icon-btn icon-btn-sm"
           aria-label={t("cmd.hidePanel")}
           title={t("cmd.hidePanel")}
           onClick={() => toggleBottomPanel()}
         >
-          <ChevronDown size={14} />
+          <X size={14} />
         </button>
       </div>
     );
@@ -265,10 +322,11 @@ function GroupActions({ group }: { group: DockviewGroupPanel }) {
 function Watermark() {
   const t = useT();
   const items: Array<[string, string, string, typeof Bot]> = [
-    ["newSession", t("cmd.newSession"), "mod+n", Bot],
+    ["newSession", t("cmd.newSession"), "mod+shift+n", Bot],
     ["quickOpen", t("cmd.quickOpen"), "mod+p", FileSearch],
     ["palette", t("cmd.palette"), "mod+shift+p", CommandIcon],
-    ["togglePanel", t("cmd.togglePanel"), "mod+backquote", SquareTerminal],
+    ["togglePanel", t("cmd.togglePanel"), "mod+j", SquareTerminal],
+    ["keyboardShortcuts", t("cmd.keyboardShortcuts"), "mod+k mod+s", Keyboard],
   ];
   return (
     <div className="watermark">

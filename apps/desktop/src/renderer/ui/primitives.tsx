@@ -1,7 +1,7 @@
 // Composants d'interface de base : boutons, info-bulles avec raccourci, touches, squelettes, états vides, erreurs.
 import * as RTooltip from "@radix-ui/react-tooltip";
-import { CircleAlert, LoaderCircle, PlugZap } from "lucide-react";
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { CircleAlert, Info, LoaderCircle, PlugZap } from "lucide-react";
+import { forwardRef, useId, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { NexusError } from "../api.ts";
 import { useT, type TKey } from "../i18n/index.ts";
 import { formatShortcut } from "../lib/shortcuts.ts";
@@ -42,6 +42,24 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 export function Kbd({ spec }: { spec: string }) {
   const lang = useAppStore((s) => s.lang);
   return <kbd className="kbd">{formatShortcut(spec, lang)}</kbd>;
+}
+
+/** Indicateur ⓘ accessible : bouton focusable, info-bulle au survol comme au focus, texte relié par aria-describedby. */
+export function InfoTip({ text }: { text: string }) {
+  const t = useT();
+  const id = useId();
+  return (
+    <>
+      <Tip label={text} side="top">
+        <button type="button" className="info-tip" aria-label={t("common.moreInfo")} aria-describedby={id}>
+          <Info size={12} aria-hidden />
+        </button>
+      </Tip>
+      <span id={id} className="sr-only">
+        {text}
+      </span>
+    </>
+  );
 }
 
 export function Tip({
@@ -141,6 +159,8 @@ export function ErrorNotice({ error, compact }: { error?: NexusError; compact?: 
   if (!error) return null;
   const unavailable = error.code === "unavailable" || error.code === "unknown_channel";
   const known = `err.${error.code}` as TKey;
+  const showMessage =
+    Boolean(error.message) && !["unknown_channel", "bridge_missing", "internal_error"].includes(error.code);
   return (
     <div
       className={cx("notice", unavailable ? "notice-muted" : "notice-error", compact && "notice-compact")}
@@ -148,10 +168,8 @@ export function ErrorNotice({ error, compact }: { error?: NexusError; compact?: 
     >
       {unavailable ? <PlugZap size={15} aria-hidden /> : <CircleAlert size={15} aria-hidden />}
       <div className="min-w-0">
-        <p className="notice-title">{t(known)}</p>
-        {!compact && error.message && !unavailable && (
-          <p className="notice-detail">{t("err.detail", { msg: error.message.slice(0, 400) })}</p>
-        )}
+        {/* Message du main déjà traduit (langue des réglages) affiché tel quel ; sinon libellé localisé du code. */}
+        <p className="notice-title">{showMessage ? error.message.slice(0, 400) : t(known)}</p>
       </div>
     </div>
   );
