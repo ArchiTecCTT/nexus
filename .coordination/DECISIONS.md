@@ -35,3 +35,21 @@ Ces décisions prévalent sur le cahier maître lorsqu'elles s'en écartent (éc
 - **Session du CLI en sandbox** : conservée en lecture-écriture (le CLI doit rafraîchir ses jetons) et **affichée** dans la
   description du mode « Autonome en sandbox ». Risque documenté (modèle de menace M19).
 - Les domaines ajoutés à la sandbox exigent une **boîte de dialogue native** du processus principal (M20).
+
+## 11/10/2026 — pnpm, tous les agents, plan de déploiement
+
+- **Gestionnaire de paquets : pnpm 11** (`pnpm-workspace.yaml`, `nodeLinker: hoisted` pour Electron Forge, scripts
+  d'installation limités à `allowBuilds`). `package-lock.json` supprimé.
+- **Tous les agents doivent fonctionner** : Claude, Codex, Hermes, OpenCode vérifiés en réel (hors sandbox et dans la
+  sandbox) ; Gemini et Qwen en attente de la connexion du propriétaire.
+- **Architecture = plan de déploiement**, pas de diagrammes : propositions d'hébergement (Vercel, Render, Railway, VPS
+  Hostinger, MongoDB Atlas…) ajustées par l'IA qui pilote, validées par l'utilisateur, exécutées étape par étape.
+
+## 11/10/2026 — Orchestre et revue de Hermes
+
+- **L'Orchestre est la fonctionnalité phare** : un chef d'orchestre (agent choisi) planifie, attribue, transmet le travail,
+  relit et intègre ; les agents se parlent via le bus MCP « nexus ». Autonomie « totale » ou « je valide le plan ».
+- **D-4 confirmée par le propriétaire** : `.env` visibles par défaut, protection activable par projet (recommandation de
+  Hermes de les masquer par défaut écartée).
+- Déploiement : utilisateur Atlas limité à la base applicative, plage réseau explicite (ouverture totale sur case
+  explicite seulement) ; empreinte SSH de l'hôte exigée avant tout envoi.

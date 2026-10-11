@@ -3,6 +3,16 @@
 **Statut : préversion interne, Linux uniquement, non publiée.** Une publication publique attend les décisions du propriétaire
 (licence, marque) et les validations sur Windows et macOS (cahier maître §12 et §20, phase 5).
 
+## Nouveautés majeures
+
+- **Orchestre** : un chef d'orchestre IA découpe un objectif, répartit le travail entre agents de fournisseurs différents
+  (Claude, Codex, Gemini, OpenCode, Qwen, Hermes), leur transmet le travail des autres, relit chaque résultat et rédige la
+  synthèse. Les agents **se parlent en direct** par le bus MCP « nexus » (vérifié avec Claude, Codex et OpenCode réels).
+- Tous les agents vérifiés en réel hors sandbox et dans la sandbox (Claude, Codex, Hermes, OpenCode) ; Gemini et Qwen
+  prêts, en attente de connexion.
+- Interface façon VS Code, agents dans leur vrai terminal, plan de déploiement, sessions supprimables avec historique,
+  raccourcis complets, interface et messages dans la langue choisie, gestionnaire de paquets pnpm.
+
 ## Contenu
 
 - Application desktop Electron 44 (React 19 + Zustand) avec frontière de sécurité testée : renderer sans Node, pont IPC minimal

@@ -49,3 +49,10 @@ Contrôle global : `npm run check` (lint + typecheck + tests) ; E2E Electron : `
 | P1 n°7 : diffusion d'une consigne à 2–6 agents (`sessions.startMany`), copies isolées | fait | test de diffusion | — |
 | Refus réseau de la sandbox remontés à l'interface (`sandbox-denied`, « Autoriser ce domaine ») | fait | test sandbox réel (CONNECT refusé 403 + événement) | — |
 | P0 n°4 : Codex / Gemini en réel | bloqué | — | CLI à installer et connecter (accord du propriétaire) |
+| pnpm (migration depuis npm) | fait | `pnpm run check` 245 tests, E2E 28/28 sur le paquet | — |
+| Agents réels via le lanceur Nexus | fait | Claude, Codex (après `/proc` propre au namespace + `approval_policy="never"`), Hermes (`chat -Q -q`), OpenCode (`run`) : fichier créé, hors sandbox ET dans la sandbox | Gemini, Qwen : connexion du propriétaire requise |
+| Plan de déploiement (`@nexus/deploy-planner`, panneau Déploiement) | fait (API simulées) | 8 tests (serveurs factices au format des API Vercel/Render/Railway/Atlas, faux ssh) + intégration + E2E | essai réel : comptes et jetons des hébergeurs requis |
+| **Orchestre (chef d'orchestre autonome)** | fait (moteur) | plan par le chef, DAG parallèle en copie commune, transmission, revue avec corrections, synthèse, intégration ; 4 tests + **runs réels** : Claude chef + Codex (module + tests), Claude + Codex coopérant via le bus (question de Codex à Claude, réponse, confirmation du chef) | interface en cours ; bus indisponible en sandbox |
+| Bus MCP de l'équipe (`team_status`, `send_message`, `read_messages`, `ask_lead`) | fait | test protocole MCP réel ; vérifié en réel avec Claude, Codex, OpenCode | Gemini/Qwen : connexion requise ; Hermes : non branché |
+| Déploiement durci (Atlas moindre privilège + CIDR, empreinte SSH vérifiée) | fait | 10 tests deploy-planner | essai réel : comptes requis |
+| Messages et journaux dans la langue choisie | fait | test FR→EN | — |

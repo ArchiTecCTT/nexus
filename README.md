@@ -1,105 +1,94 @@
 # Nexus AI
 
-> Un atelier local de développement logiciel, orienté agents de code, pour piloter des équipes d’agents IA de façon observable, persistante et sécurisée.
+> **The orchestra for your AI coding agents.** Describe a goal: Claude, Codex, Gemini, OpenCode, Qwen and Hermes take it
+> on **together** — they split the work, **talk to each other while they code**, review each other, and hand you an
+> integrated result. In a real development environment, running locally, with a real sandbox.
 
-**Statut : préversion 0.1.0, Linux uniquement, interne (non publiée).** Les tickets T-000 à T-025 sont implémentés et testés sur Ubuntu
-(paquet `.deb` compris) ; les intégrations GitHub, Vercel, Codex et API par clé sont validées sur fixtures ; Windows/macOS n'ont ni isolation
-vérifiée ni installateur testé, et la publication publique (T-026) attend les décisions du propriétaire (licence, marque).
-Détail : [`.coordination/STATUS.md`](.coordination/STATUS.md) et [notes de version](docs/RELEASE_NOTES.md).
+**Status: preview 0.1.0 — Linux first** (Windows and macOS builds are produced, without the verified sandbox).
+Details: [`.coordination/STATUS.md`](.coordination/STATUS.md) · [release notes](docs/RELEASE_NOTES.md).
 
-Nexus AI vise à réunir dans une application desktop les agents accessibles en CLI (Claude Code, Codex, Gemini CLI, Hermes et futurs connecteurs) et les modèles accessibles par API (OpenAI, Anthropic, Google AI Studio, OpenRouter, serveurs locaux, etc.).
+## Download
 
-L’objectif est d’aider un développeur indépendant ou une petite équipe à créer des projets, organiser plusieurs agents, leur assigner des missions, suivre leurs actions en temps réel et retrouver durablement les conversations, décisions, tâches et artefacts produits.
+Grab the latest build from the [**Releases**](https://github.com/Dayifour/nexus/releases) page:
 
-## Principes du produit
+| System | File | Install |
+|---|---|---|
+| Ubuntu / Debian | `nexus-ai_<version>_amd64.deb` | `sudo apt install ./nexus-ai_<version>_amd64.deb` |
+| Fedora / openSUSE | `nexus-ai-<version>.x86_64.rpm` | `sudo dnf install ./nexus-ai-<version>.x86_64.rpm` |
+| Any Linux | `Nexus AI-linux-x64-<version>.zip` | unzip, then run `nexus-ai` |
+| Windows | `Nexus AI-<version> Setup.exe` (or the `.zip`) | run the installer |
+| macOS | `Nexus AI-darwin-arm64-<version>.zip` | unzip, then right-click → Open (unsigned build) |
 
-- **Local-first** : le fonctionnement de base ne requiert pas de serveur central.
-- **Travail multi-agents contrôlé** : rôles, équipes, tâches, dépendances et messages inter-agents structurés.
-- **Gouvernance configurable** : mode manuel, assisté ou supervisé par une IA choisie par l’utilisateur.
-- **Exécution isolée** : worktrees Git, sandbox réelle des processus CLI et permissions appliquées hors de l’interface.
-- **Sécurité des secrets** : aucun secret ne doit atteindre le renderer, les sorties sont redirigées et les accès protégés sont filtrés.
-- **Traçabilité et persistance** : journal d’événements, décisions et état des tâches conservés localement dans SQLite.
-- **Actions sensibles confirmées** : push GitHub, déploiement Vercel de production et autres actions à impact demandent une validation explicite.
+`SHA256SUMS.txt` lists the checksum of every file. Nexus drives the agent CLIs you already use: install and sign in to at
+least one of them (`claude`, `codex`, `gemini`, `qwen`, `opencode`, `hermes`) — Nexus detects them automatically.
 
-## Fonctionnalités prévues
+## What makes Nexus different
 
-- Création et gestion de projets et d’équipes d’agents.
-- Inventaire local des CLI disponibles, sans authentification ou installation intrusive.
-- Connecteurs CLI et API pour agents et modèles de code.
-- Planification des missions sous forme de DAG et exécution parallèle lorsque les dépendances et chemins le permettent.
-- Mémoire de projet versionnée, conversations persistantes, reprise contrôlée après interruption.
-- Visualisation du streaming, des tâches, des logs, des diffs et des erreurs.
-- Explorateur de fichiers, éditeur Monaco et terminaux intégrés.
-- Git, GitHub, worktrees, revue et push avec consentement utilisateur.
-- Déploiements Vercel de prévisualisation puis de production avec validations distinctes.
-- Dictée vocale avec consentement et validation de la transcription avant envoi.
-- Génération de plans d’architecture et de diagrammes Mermaid exportables.
+Other tools run several agents **side by side**. Nexus makes them **work together**:
 
-## Architecture cible
+- **An autonomous conductor.** One agent (e.g. Claude) breaks the goal into tasks, assigns each task to the agent best
+  suited for it (architecture, tests, front-end, large context…) and orders them as a dependency graph.
+- **Agents from different vendors on one team.** Independent tasks run in parallel in a shared, isolated copy of the
+  project.
+- **Real agent-to-agent messaging.** Every agent gets the `nexus` MCP tools — `team_status`, `send_message`,
+  `read_messages`, `ask_lead`. Codex can ask the conductor for an exact API signature, or warn Claude about an interface
+  contract, while it works. Verified with real Claude Code, Codex CLI and OpenCode runs.
+- **Hand-offs.** Each agent receives the report and the changes of the tasks it depends on.
+- **Reviews by the conductor.** Every result is reviewed (diff + acceptance criteria): accepted, or sent back with precise
+  changes.
+- **Resilient.** If an agent fails (not signed in, CLI error), the conductor shows why and reassigns its tasks to another
+  team member.
+- **You stay in control.** Full autonomy or plan approval; message the conductor at any time; stop instantly; merge the
+  team's branch into your project in one confirmed click.
+
+## Everything else you expect from a coding workspace
+
+- **Three simple modes**: Autonomous (directly in the project), Sandboxed (bubblewrap + seccomp + network proxy limited to
+  the agent's provider), Reviewed (isolated copy, you accept the changes).
+- **Agents in their real terminal** (interactive TUI, live status, desktop notifications) or as a conversation; sessions
+  are kept per project, can be resumed, searched and deleted.
+- **A VS Code-like IDE**: file explorer, Monaco editor, real terminals, command palette, full keyboard shortcuts, Git,
+  pull requests.
+- **Deployment planning**: the AI proposes hosting architectures (Vercel, Render, Railway, Hostinger VPS, MongoDB
+  Atlas…), you pick one, Nexus deploys it step by step with confirmation.
+- **Local-first and secure**: SQLite event log, OS keychain for secrets, validated IPC, native confirmation dialogs for
+  sensitive actions. See the [threat model](docs/threat-model/README.md).
+- **French and English** interface, messages and logs.
+
+## Architecture
 
 ```text
-Renderer React (UI non fiable)
-    ⇅ IPC typé et validé via preload/contextBridge
-Electron Main
-    ⇅
-Orchestrateur local
-    ├── Event Store SQLite, snapshots et migrations
-    ├── Registry des connecteurs et diagnostic des CLI
-    ├── Scheduler de tâches DAG et bus de messages
-    ├── Sandbox Broker, Secret Broker et superviseur de processus
-    ├── Git/Worktree Broker et GitHub Broker
-    ├── Vercel Deploy Broker, mesure d’usage et adaptateur voix
-    └── Adaptateurs CLI (PTY/JSONL) et API (HTTPS)
+React renderer (untrusted UI)
+    ⇅ typed IPC, validated in preload and main (Zod)
+Electron main
+    ├── Orchestra: conductor, parallel task graph, reviews, MCP team bus between agents
+    ├── Event store (SQLite + Prisma), projections, crash recovery
+    ├── Connectors: CLI agents (stream-json / PTY) and API models (HTTPS)
+    ├── Process supervisor (PID namespace) and Linux sandbox (bwrap, seccomp, cgroups, egress proxy)
+    ├── Git worktrees, GitHub, deployment planner
+    └── Secret vault (safeStorage), voice, usage
 ```
 
-Le renderer n’a pas d’accès Node direct. Les entrées IPC sont validées, les clés API restent hors de l’interface, et les processus externes sont lancés par un runner contrôlé.
+## Develop
 
-## Démarrer
+Requirements: Node 24.18, pnpm 11, Linux (bubblewrap and unprivileged user namespaces for the sandbox tests).
 
 ```bash
 pnpm install --frozen-lockfile && pnpm run generate
-pnpm run check      # lint, typecheck, tests
-npm start          # application en développement
+pnpm run check     # lint, typecheck, tests
+pnpm start         # run the app in development
+pnpm --filter @nexus/desktop run make   # build packages into apps/desktop/out/make
 ```
 
-Guide complet : [installation (FR)](docs/runbooks/installation.md) · [installation (EN)](docs/runbooks/installation.en.md).
+Reproducible Linux build in Docker (no local toolchain needed):
 
-## Feuille de route
+```bash
+docker build -f Dockerfile.release --target export -o dist .
+```
 
-Le développement est organisé en six phases :
+Publishing a release: see [`docs/RELEASING.md`](docs/RELEASING.md). Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) ·
+security: [`SECURITY.md`](SECURITY.md).
 
-1. **Faisabilité et ADR** : inspection de l’environnement, POC de streaming CLI, sandbox et stockage des secrets.
-2. **Socle** : Electron Forge, Vite, TypeScript, React, IPC sécurisé, packages de contrats, SQLite et CI.
-3. **Agents et mémoire** : connecteurs Claude/Codex, streaming, événements, reprise et messages inter-agents.
-4. **Supervision et sécurité** : politiques, budgets, sandbox, secrets, worktrees et audit.
-5. **MVP produit** : interface de code, GitHub, Vercel, voix, suivi d’usage et diagrammes.
-6. **Release cross-platform** : sandbox Windows/macOS, packaging, tests réels, documentation et release.
+## License
 
-La première tâche est [`T-000`](docs/TICKETS/T-000.md) : documenter l’environnement Ubuntu et vérifier les outils disponibles avant de démarrer l’implémentation.
-
-## Documentation
-
-La documentation est la source de vérité du projet à ce stade.
-
-- [Point de départ pour les agents](docs/00_START_HERE.md)
-- [Vision et parcours produit](docs/PRODUIT/vision_et_parcours.md)
-- [Architecture système](docs/ARCHITECTURE/systeme.md)
-- [Contrats et IPC](docs/ARCHITECTURE/contrats.md)
-- [Politique de sécurité](docs/SECURITE/politique.md)
-- [Décisions et priorités](docs/GOUVERNANCE/decisions_et_priorites.md)
-- [Plan de développement](docs/ROADMAP/plan_developpement.md)
-- [Tickets de développement](docs/TICKETS/)
-- [ADR](docs/adr/) : runtime et sandbox (001, 003), monorepo et persistance (002)
-- [Modèle de menace](docs/threat-model/README.md) · [Matrice d'acceptation](docs/testing/matrice-acceptation.md)
-- [Licences des dépendances](docs/licences/AUDIT.md) · [Sécurité](SECURITY.md) · [Contribuer](CONTRIBUTING.md)
-
-## Contribution
-
-Avant toute implémentation, lire [`docs/00_START_HERE.md`](docs/00_START_HERE.md), puis la spécification maîtresse, les décisions de gouvernance, le ticket concerné et les contrats associés.
-
-Une contribution doit indiquer son ticket, les fichiers modifiés, les tests exécutés, l’impact sécurité, les éventuelles évolutions de contrats et une procédure de retour arrière. Aucun secret ne doit être ajouté au dépôt.
-
-## Licence
-
-La licence n’est pas encore ajoutée au dépôt. Apache-2.0 est actuellement la recommandation documentaire, sous réserve de validation finale du propriétaire du projet.
-Le texte et une NOTICE sont prêts dans [`docs/licences/`](docs/licences/) ; l’audit des dépendances embarquées ne relève aucune licence incompatible.
+Apache-2.0 — Copyright 2026 Dayifour. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
