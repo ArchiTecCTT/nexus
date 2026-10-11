@@ -3,11 +3,12 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeploymentPlan } from "@nexus/contracts";
-import type { RunOptions } from "@nexus/process-supervisor";
+import type { RunOptions, RunResult } from "@nexus/process-supervisor";
 import {
   analyzeProject,
   buildLeadPrompt,
@@ -230,12 +231,28 @@ test("plan « tout géré » : Atlas → Render → Vercel, URI et URL propagée
     [envRef("backend-1", "JWT_SECRET"), "jwt-tres-secret"],
   ]);
   const logs: string[] = [];
-  const plan = planFor(root, "managed", { "atlas.clientId": "mdb_sa_id", "atlas.groupId": "g1" });
+  // Render n'a pas d'IP fixe : ouverture totale explicitement acceptée.
+  const plan = planFor(root, "managed", {
+    "atlas.clientId": "mdb_sa_id",
+    "atlas.groupId": "g1",
+    "atlas.allowAnywhere": "true",
+  });
   const d = deps(base, vault, logs);
   const db = await runStep(d, plan, "db-atlas");
   assert.match(
     vault.get(OUTPUT_DB_URI)!,
     /^mongodb\+srv:\/\/shop-app:[^@]+@shop-db\.abc\.mongodb\.net\/app\?retryWrites=true/,
+  );
+  const user = calls.find((c) => c.path.endsWith("/databaseUsers") && c.method === "POST")!;
+  assert.deepEqual(user.body.roles, [{ databaseName: "app", roleName: "readWrite" }]);
+  const access = calls.find((c) => c.path.endsWith("/accessList"))!;
+  assert.deepEqual(
+    access.body.map((e: { cidrBlock: string }) => e.cidrBlock),
+    ["0.0.0.0/0"],
+  );
+  assert.ok(
+    logs.some((l) => /AVERTISSEMENT accès réseau ouvert/.test(l)),
+    "ouverture totale signalée",
   );
   assert.deepEqual(db.outputs, { DATABASE_URI: OUTPUT_DB_URI });
   const back = await runStep(d, plan, "back-backend-1");
@@ -267,6 +284,53 @@ test("plan « tout géré » : Atlas → Render → Vercel, URI et URL propagée
     assert.ok(!all.includes(s), `secret journalisé : ${s}`);
 });
 
+test("Atlas : readWrite sur la base applicative, CIDR requis et validé, ouverture totale seulement si autorisée", async (t) => {
+  const root = mern(t);
+  const { base, calls } = await fakeApis(t);
+  const vault = new Map([["deploy.atlas", "atlas-secret"]]);
+  const ids = { "atlas.clientId": "mdb_sa_id", "atlas.groupId": "g1" };
+  const run = (inputs: Record<string, string>, logs: string[] = []) =>
+    runStep(deps(base, vault, logs), planFor(root, "vps", { ...ids, ...inputs }), "db-atlas");
+
+  // Refus avant tout appel réseau.
+  await assert.rejects(run({}), (e: Error & { code?: string }) => {
+    assert.equal(e.code, "missing_input");
+    assert.match(e.message, /atlas\.cidr/);
+    return true;
+  });
+  await assert.rejects(run({ "atlas.cidr": "0.0.0.0/0" }), /toutes les adresses refusée/);
+  await assert.rejects(run({ "atlas.cidr": "203.0.113.7/32, ::/0" }), /toutes les adresses refusée/);
+  for (const bad of ["203.0.113.300/32", "203.0.113.7/33", "2001:db8::/129", "exemple.com", "1.2.3.4/032", "1.2.3.4/"])
+    await assert.rejects(run({ "atlas.cidr": bad }), /Plage d'adresses invalide pour Atlas/, bad);
+  await assert.rejects(run({ "atlas.cidr": "203.0.113.7", "atlas.dbName": "a/b" }), /Nom de base Atlas invalide/);
+  assert.equal(calls.length, 0, "aucun appel à Atlas tant que l'accès demandé est refusé");
+
+  // CIDR du VPS (IP seule normalisée en /32, IPv6 accepté), base nommée.
+  const logs: string[] = [];
+  await run({ "atlas.cidr": "203.0.113.7, 2001:db8::/48", "atlas.dbName": "shop" }, logs);
+  const user = calls.find((c) => c.path.endsWith("/databaseUsers") && c.method === "POST")!;
+  assert.equal(user.body.databaseName, "admin");
+  assert.deepEqual(user.body.roles, [{ databaseName: "shop", roleName: "readWrite" }]);
+  assert.ok(!JSON.stringify(user.body).includes("AnyDatabase"));
+  const access = calls.find((c) => c.path.endsWith("/accessList"))!;
+  assert.deepEqual(
+    access.body.map((e: { cidrBlock: string }) => e.cidrBlock),
+    ["203.0.113.7/32", "2001:db8::/48"],
+  );
+  assert.match(vault.get(OUTPUT_DB_URI)!, /\.mongodb\.net\/shop\?/);
+  assert.ok(!logs.some((l) => /AVERTISSEMENT/.test(l)));
+
+  // Ouverture totale explicitement autorisée (hébergeur sans IP fixe).
+  calls.length = 0;
+  const logs2: string[] = [];
+  await run({ "atlas.cidr": "0.0.0.0/0", "atlas.allowAnywhere": "true" }, logs2);
+  assert.deepEqual(
+    calls.find((c) => c.path.endsWith("/accessList"))!.body.map((e: { cidrBlock: string }) => e.cidrBlock),
+    ["0.0.0.0/0"],
+  );
+  assert.ok(logs2.some((l) => /AVERTISSEMENT accès réseau ouvert/.test(l)));
+});
+
 test("plan Railway : projet, service, variables, domaine", async (t) => {
   const root = mern(t);
   const { base, calls } = await fakeApis(t);
@@ -284,35 +348,72 @@ test("plan Railway : projet, service, variables, domaine", async (t) => {
   });
 });
 
-test("plan VPS : ssh sans secret dans argv, .env et Dockerfile générés sur le serveur, erreurs claires", async (t) => {
+// Paire de clés de test générée en mémoire (aucune clé du système n'est lue) : blob OpenSSH ssh-ed25519.
+function testHostKey() {
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const part = (b: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(b.length, 0);
+    return Buffer.concat([len, b]);
+  };
+  const blob = Buffer.concat([part(Buffer.from("ssh-ed25519")), part(raw)]).toString("base64");
+  const fp = `SHA256:${createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
+  return { blob, fp };
+}
+
+const done = (exitCode: number): RunResult => ({
+  exitCode,
+  signal: null,
+  timedOut: false,
+  cancelled: false,
+  outputLimitExceeded: false,
+  durationMs: 1,
+});
+
+test("plan VPS : clé hôte vérifiée, ssh sans secret dans argv, .env et Dockerfile générés sur le serveur, erreurs claires", async (t) => {
   const root = mern(t);
   const key = join(root, "id_ed25519");
   writeFileSync(key, "fausse-cle");
+  const host = testHostKey();
+  const other = testHostKey();
   const vault = new Map([
     [envRef("backend-1", "JWT_SECRET"), "jwt-tres-secret"],
     [OUTPUT_DB_URI, "mongodb+srv://u:p@h/app"],
   ]);
+  const scans: RunOptions[] = [];
+  const keyscanRunner = async (o: RunOptions) => {
+    scans.push(o);
+    o.onLine?.("# 203.0.113.7:22 SSH-2.0-OpenSSH_9.6", "stderr");
+    o.onLine?.(`203.0.113.7 ssh-ed25519 ${host.blob}`, "stdout");
+    return done(0);
+  };
   const seen: RunOptions[] = [];
+  let knownHosts = "";
+  let knownPath = "";
   const logs: string[] = [];
   const ok = deps("http://unused", vault, logs, {
+    keyscanRunner,
     sshRunner: async (o) => {
       seen.push(o);
+      knownPath = o.args.find((a) => a.startsWith("UserKnownHostsFile="))!.slice("UserKnownHostsFile=".length);
+      knownHosts = readFileSync(knownPath, "utf8");
       o.onLine?.("Clonage du dépôt", "stdout");
       o.onLine?.("NEXUS_OK", "stdout");
-      return {
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        cancelled: false,
-        outputLimitExceeded: false,
-        durationMs: 1,
-      };
+      return done(0);
     },
   });
-  const plan = planFor(root, "vps", { "vps.host": "203.0.113.7", "vps.user": "root", "vps.keyPath": key });
+  const inputs = { "vps.host": "203.0.113.7", "vps.user": "root", "vps.keyPath": key };
+  const plan = planFor(root, "vps", { ...inputs, "vps.hostKeyFingerprint": host.fp });
   const r = await runStep(ok, plan, "back-backend-1");
   assert.equal(r.url, "http://203.0.113.7");
+  assert.deepEqual(scans[0]!.args, ["-p", "22", "-T", "10", "203.0.113.7"]);
   const call = seen[0]!;
+  assert.ok(call.args.includes("StrictHostKeyChecking=yes"));
+  assert.ok(call.args.includes("GlobalKnownHostsFile=/dev/null"));
+  assert.ok(!call.args.some((a) => a.includes("accept-new")));
+  assert.equal(knownHosts, `203.0.113.7 ssh-ed25519 ${host.blob}\n`, "known_hosts ne contient que la clé vérifiée");
+  assert.ok(!existsSync(knownPath), "known_hosts temporaire supprimé après la connexion");
   assert.deepEqual(call.args.slice(-2), ["root@203.0.113.7", "bash -s"]);
   assert.ok(!call.args.join(" ").includes("jwt-tres-secret"), "aucun secret dans la ligne de commande");
   assert.match(call.stdin!, /JWT_SECRET=jwt-tres-secret\nMONGODB_URI=mongodb\+srv:\/\/u:p@h\/app\nNEXUS_ENV/);
@@ -320,26 +421,82 @@ test("plan VPS : ssh sans secret dans argv, .env et Dockerfile générés sur le
   assert.match(call.stdin!, /git clone -q --depth 1 --branch 'main' 'https:\/\/github.com\/Dayifour\/shop.git'/);
   assert.ok(call.redact?.includes("jwt-tres-secret"));
 
-  const refused = deps("http://unused", vault, [], {
-    sshRunner: async () => ({
-      exitCode: 255,
-      signal: null,
-      timedOut: false,
-      cancelled: false,
-      outputLimitExceeded: false,
-      durationMs: 1,
+  // Ligne complète de `ssh-keygen -lf` acceptée ; port non standard → hôte « [h]:port » dans known_hosts.
+  seen.length = 0;
+  await runStep(
+    ok,
+    planFor(root, "vps", {
+      ...inputs,
+      "vps.port": "2222",
+      "vps.hostKeyFingerprint": `256 ${host.fp} root@vps (ED25519)`,
     }),
+    "back-backend-1",
+  );
+  assert.equal(knownHosts, `[203.0.113.7]:2222 ssh-ed25519 ${host.blob}\n`);
+  assert.ok(seen[0]!.args.includes("2222"));
+
+  // Empreinte manquante : refus avant tout scan ni ssh.
+  seen.length = 0;
+  scans.length = 0;
+  await assert.rejects(
+    runStep(ok, planFor(root, "vps", inputs), "back-backend-1"),
+    /Empreinte de la clé hôte du VPS manquant/,
+  );
+  await assert.rejects(
+    runStep(ok, planFor(root, "vps", { ...inputs, "vps.hostKeyFingerprint": "MD5:aa:bb" }), "back-backend-1"),
+    /Empreinte de la clé hôte du VPS manquante ou invalide/,
+  );
+  // Empreinte qui ne correspond pas : refus « auth », ssh JAMAIS appelé (aucun script ni secret envoyé).
+  await assert.rejects(
+    runStep(ok, planFor(root, "vps", { ...inputs, "vps.hostKeyFingerprint": other.fp }), "back-backend-1"),
+    (e: Error & { code?: string }) => {
+      assert.equal(e.code, "auth");
+      assert.match(e.message, /ne correspond pas à l'empreinte/);
+      return true;
+    },
+  );
+  assert.equal(scans.length, 1, "la clé hôte a bien été récupérée");
+  assert.equal(seen.length, 0, "empreinte différente : ssh jamais appelé");
+  // Clé renvoyée incohérente (type annoncé ≠ blob) ou aucune clé : refus.
+  const badScan = deps("http://unused", vault, [], {
+    keyscanRunner: async (o) => {
+      o.onLine?.(`203.0.113.7 ssh-rsa ${host.blob}`, "stdout");
+      return done(0);
+    },
+    sshRunner: async (o) => {
+      seen.push(o);
+      return done(0);
+    },
   });
+  await assert.rejects(runStep(badScan, plan, "back-backend-1"), /Impossible de récupérer la clé hôte/);
+  assert.equal(seen.length, 0, "ssh n'est jamais lancé sans clé hôte vérifiée");
+
+  const refused = deps("http://unused", vault, [], { keyscanRunner, sshRunner: async () => done(255) });
   await assert.rejects(runStep(refused, plan, "back-backend-1"), /Connexion SSH refusée/);
   await assert.rejects(
     runStep(
       ok,
-      planFor(root, "vps", { "vps.host": "x;rm -rf /", "vps.user": "root", "vps.keyPath": key }),
+      planFor(root, "vps", { ...inputs, "vps.host": "x;rm -rf /", "vps.hostKeyFingerprint": host.fp }),
+      "back-backend-1",
+    ),
+    /Adresse du VPS invalide/,
+  );
+  await assert.rejects(
+    runStep(
+      ok,
+      planFor(root, "vps", { ...inputs, "vps.host": "-oProxyCommand", "vps.hostKeyFingerprint": host.fp }),
       "back-backend-1",
     ),
     /Adresse du VPS invalide/,
   );
   await assert.rejects(runStep(ok, planFor(root, "vps", {}), "back-backend-1"), /Adresse du VPS manquant/);
+});
+
+test("propositions : prérequis réseau Atlas et empreinte de la clé hôte du VPS", (t) => {
+  const vps = proposeDeployments(analyzeProject(mern(t))).find((x) => x.id === "vps")!;
+  const ids = vps.requirements.map((r) => r.id);
+  assert.ok(ids.includes("atlas-network") && ids.includes("vps-host-key"));
+  assert.match(vps.requirements.find((r) => r.id === "vps-host-key")!.help!, /ssh-keygen -lf/);
 });
 
 test("étape manuelle ou plan non validé : refus explicite", async (t) => {

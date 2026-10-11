@@ -64,6 +64,20 @@ const REQ: Record<string, ProposalRequirement> = {
     secretName: "ATLAS_CLIENT_SECRET",
     help: "cloud.mongodb.com → Organization → Access Manager → Service Accounts (rôle Project Owner)",
   },
+  atlasNetwork: {
+    id: "atlas-network",
+    label: "Adresses autorisées à joindre la base Atlas (atlas.cidr), ou ouverture totale explicitement acceptée",
+    kind: "account",
+    provider: "mongodb-atlas",
+    help: "Back-end sur VPS : son IP publique (hPanel → VPS → Vue d'ensemble, ou `curl -4 ifconfig.me` sur le serveur), ex. 203.0.113.7/32. Render, Vercel et Railway n'ont pas d'IP fixe : il faut alors cocher explicitement l'ouverture à toutes les adresses (atlas.allowAnywhere), la base n'étant protégée que par son mot de passe.",
+  },
+  vpsHostKey: {
+    id: "vps-host-key",
+    label: "Empreinte de la clé hôte du VPS (SHA256:…)",
+    kind: "ssh",
+    provider: "hostinger-vps",
+    help: "Sur le serveur : `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, ou la console hPanel. Nexus refuse de se connecter si la clé présentée ne correspond pas (protection contre l'interception).",
+  },
   vps: {
     id: "vps-ssh",
     label: "Accès SSH au VPS (hôte, utilisateur, clé privée)",
@@ -87,7 +101,7 @@ function dbStep(kind: string, provider: DeployProvider): ProposalStep {
         provider,
         kind: "auto",
         detail:
-          "Cluster M0, utilisateur dédié au mot de passe généré, accès réseau ouvert aux hébergeurs ; l'URI est rangée dans le coffre sous MONGODB_URI.",
+          "Cluster M0, utilisateur dédié au mot de passe généré (droits limités à la base de l'application), accès réseau limité aux adresses indiquées ; l'URI est rangée dans le coffre sous MONGODB_URI.",
       }
     : {
         id: `db-${provider}`,
@@ -183,10 +197,10 @@ export function proposeDeployments(profile: ProjectProfile): DeploymentProposal[
     const providers = new Set(placements.map((p) => p.provider));
     const requirements: ProposalRequirement[] = [
       ...(providers.has("render") || providers.has("railway") ? [REQ.repo!] : []),
-      ...(providers.has("mongodb-atlas") ? [REQ.atlas!] : []),
+      ...(providers.has("mongodb-atlas") ? [REQ.atlas!, REQ.atlasNetwork!] : []),
       ...(providers.has("render") ? [REQ.render!] : []),
       ...(providers.has("railway") ? [REQ.railway!] : []),
-      ...(providers.has("hostinger-vps") ? [REQ.vps!] : []),
+      ...(providers.has("hostinger-vps") ? [REQ.vps!, REQ.vpsHostKey!] : []),
       ...(providers.has("vercel") ? [REQ.vercel!] : []),
     ];
     return {

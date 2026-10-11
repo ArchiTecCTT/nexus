@@ -20,6 +20,8 @@ export type RunnerDeps = ExecContext & {
   projectName: string;
   sshPath?: string;
   sshRunner?: (o: RunOptions) => Promise<RunResult>;
+  keyscanPath?: string;
+  keyscanRunner?: (o: RunOptions) => Promise<RunResult>;
 };
 
 export function chosenProposal(plan: DeploymentPlan): DeploymentProposal {
@@ -73,6 +75,9 @@ export async function runStep(deps: RunnerDeps, plan: DeploymentPlan, stepId: st
       groupId: input(plan, "atlas.groupId", "Identifiant du projet Atlas"),
       clusterName: serviceName(deps.projectName, "db").slice(0, 23),
       dbUser: serviceName(deps.projectName, "app").slice(0, 30),
+      dbName: plan.inputs["atlas.dbName"]?.trim() || "app",
+      ...(plan.inputs["atlas.cidr"]?.trim() && { cidr: plan.inputs["atlas.cidr"].trim() }),
+      allowAnywhere: plan.inputs["atlas.allowAnywhere"] === "true",
     });
     await deps.setSecret(OUTPUT_DB_URI, r.uri);
     return { message: r.message, ...(r.url && { url: r.url }), outputs: { DATABASE_URI: OUTPUT_DB_URI } };
@@ -93,6 +98,7 @@ export async function runStep(deps: RunnerDeps, plan: DeploymentPlan, stepId: st
       user: input(plan, "vps.user", "Utilisateur SSH"),
       port: Number(plan.inputs["vps.port"] || 22),
       keyPath: input(plan, "vps.keyPath", "Chemin de la clé SSH"),
+      hostKeyFingerprint: input(plan, "vps.hostKeyFingerprint", "Empreinte de la clé hôte du VPS"),
       appName: name,
       repoUrl:
         plan.inputs["vps.repoUrl"]?.trim() ||
@@ -108,6 +114,8 @@ export async function runStep(deps: RunnerDeps, plan: DeploymentPlan, stepId: st
     out = await deployVps(deps, t, {
       ...(deps.sshPath && { sshPath: deps.sshPath }),
       ...(deps.sshRunner && { runner: deps.sshRunner }),
+      ...(deps.keyscanPath && { keyscanPath: deps.keyscanPath }),
+      ...(deps.keyscanRunner && { keyscanRunner: deps.keyscanRunner }),
     });
   } else {
     if (!repo)

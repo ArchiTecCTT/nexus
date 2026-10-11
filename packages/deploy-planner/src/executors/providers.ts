@@ -3,6 +3,7 @@
 // Formats d'API suivis : documentation publique de chaque éditeur (non vérifiés contre un compte réel dans ce dépôt :
 // les tests utilisent des serveurs factices qui reproduisent ces formats).
 import { randomBytes } from "node:crypto";
+import { isIPv4, isIPv6 } from "node:net";
 import { api, DeployError, required, sleep, type ExecContext, type StepOutcome } from "./common.ts";
 
 export type AppTarget = {
@@ -242,10 +243,67 @@ export async function deployRailway(ctx: ExecContext, t: AppTarget & { projectNa
 
 // ---------------------------------------------------------------------------------------------------- MongoDB Atlas
 
-export type AtlasTarget = { clientId: string; groupId: string; clusterName: string; dbUser: string; region?: string };
+export type AtlasTarget = {
+  clientId: string;
+  groupId: string;
+  clusterName: string;
+  dbUser: string;
+  region?: string;
+  /** Base applicative : l'utilisateur n'a de droits que sur elle, l'URI la désigne. */
+  dbName: string;
+  /** Plages autorisées (`atlas.cidr`), séparées par des virgules ; une IP seule vaut /32 (ou /128). */
+  cidr?: string;
+  /** Ouverture à toutes les adresses explicitement acceptée (`atlas.allowAnywhere === "true"`). */
+  allowAnywhere?: boolean;
+};
+
+const DB_NAME = /^[A-Za-z0-9_-]{1,38}$/;
+const ANYWHERE = "0.0.0.0/0";
+
+/** Une plage CIDR IPv4 ou IPv6 validée strictement, normalisée ; `undefined` si invalide. */
+export function parseCidr(raw: string): string | undefined {
+  const m = /^([^/\s]+)(?:\/(\d{1,3}))?$/.exec(raw.trim());
+  if (!m) return undefined;
+  const [, addr, bits] = m as unknown as [string, string, string | undefined];
+  const max = isIPv4(addr) ? 32 : isIPv6(addr) && !addr.includes("%") ? 128 : 0;
+  if (!max) return undefined;
+  if (bits !== undefined && (!/^(0|[1-9]\d*)$/.test(bits) || Number(bits) > max)) return undefined;
+  return `${addr.toLowerCase()}/${bits ?? max}`;
+}
+
+/** Liste d'accès réseau Atlas : explicite, jamais ouverte à tous sans consentement. */
+export function atlasAccessList(cidr: string | undefined, allowAnywhere: boolean): string[] {
+  const parts = (cidr ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    if (allowAnywhere) return [ANYWHERE];
+    throw new DeployError(
+      "missing_input",
+      "Plage d'adresses autorisées Atlas manquante (atlas.cidr) : indiquez l'IP de votre serveur (ex. 203.0.113.7/32), ou cochez explicitement l'ouverture à toutes les adresses pour un hébergeur sans IP fixe",
+    );
+  }
+  const out: string[] = [];
+  for (const p of parts) {
+    const c = parseCidr(p);
+    if (!c) throw new DeployError("missing_input", `Plage d'adresses invalide pour Atlas : ${p}`);
+    if (c.endsWith("/0") && !allowAnywhere) {
+      throw new DeployError(
+        "missing_input",
+        "Ouverture de la base à toutes les adresses refusée : n'importe qui sur Internet pourrait tenter de s'y connecter. Indiquez l'IP de votre VPS (ex. 203.0.113.7/32), ou cochez explicitement l'ouverture totale si votre hébergeur n'a pas d'IP fixe (Render, Vercel, Railway)",
+      );
+    }
+    if (!out.includes(c)) out.push(c);
+  }
+  return out;
+}
 
 /** Cluster gratuit M0, utilisateur au mot de passe généré, accès réseau, URI de connexion (renvoyée pour le coffre). */
 export async function provisionAtlas(ctx: ExecContext, t: AtlasTarget): Promise<StepOutcome & { uri: string }> {
+  if (!DB_NAME.test(t.dbName)) throw new DeployError("missing_input", "Nom de base Atlas invalide");
+  // Validé avant tout appel réseau : rien n'est créé si l'accès demandé est refusé.
+  const access = atlasAccessList(t.cidr, t.allowAnywhere === true);
   const secret = await required(ctx, "deploy.atlas", "Secret du compte de service Atlas");
   const root = base(ctx, "atlas", "https://cloud.mongodb.com");
   const tok = await ctx.fetch(`${root}/api/oauth/token`, {
@@ -312,18 +370,24 @@ export async function provisionAtlas(ctx: ExecContext, t: AtlasTarget): Promise<
     databaseName: "admin",
     username: t.dbUser,
     password,
-    roles: [{ databaseName: "admin", roleName: "readWriteAnyDatabase" }],
+    // Droits limités à la base applicative (jamais readWriteAnyDatabase).
+    roles: [{ databaseName: t.dbName, roleName: "readWrite" }],
   });
-  // Les hébergeurs gérés n'ont pas d'IP fixe : accès ouvert, protégé par l'utilisateur et le mot de passe (signalé).
-  await call("/accessList", "POST", [{ cidrBlock: "0.0.0.0/0", comment: "Nexus AI : hébergeurs sans IP fixe" }]);
-  ctx.log(
-    "Atlas : accès réseau ouvert à toutes les adresses (les hébergeurs n'ont pas d'IP fixe) ; restreignez-le si votre serveur a une IP fixe.",
+  await call(
+    "/accessList",
+    "POST",
+    access.map((cidrBlock) => ({ cidrBlock, comment: "Nexus AI" })),
   );
+  if (access.some((c) => c.endsWith("/0")))
+    ctx.log(
+      "Atlas : AVERTISSEMENT accès réseau ouvert à toutes les adresses (autorisé explicitement) ; la base n'est protégée que par l'utilisateur et son mot de passe.",
+    );
+  else ctx.log(`Atlas : accès réseau limité à ${access.join(", ")}`);
   const u = new URL(srv);
   u.username = encodeURIComponent(t.dbUser);
   u.password = encodeURIComponent(password);
-  u.pathname = "/app";
-  u.search = "retryWrites=true&w=majority";
+  u.pathname = `/${t.dbName}`;
+  u.search = "retryWrites=true&w=majority&authSource=admin";
   return {
     message: "Base MongoDB Atlas prête",
     uri: u.toString(),
