@@ -1,0 +1,13 @@
+{
+  "name": "@nexus/diagrams",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Analyse statique en lecture seule d'un projet et génération de diagrammes Mermaid textuels.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
