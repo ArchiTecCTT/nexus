@@ -21,6 +21,10 @@ import {
   ConnectorRegistry,
   EventSequencer,
   GENERIC_INVOCATIONS,
+  claudeMcpArgs,
+  codexMcpArgs,
+  mcpConfigFor,
+  stripAnsi,
   GenericCliConnector,
   createCodexNormalizer,
   probeCli,
@@ -361,4 +365,39 @@ test("CLI générique : invocation non interactive (Hermes chat -Q -q), --yolo s
     ["chat", "-Q", "-q", "Fais X"],
     ["chat", "-Q", "--yolo", "-q", "Fais Y"],
   ]);
+});
+
+test("bus de l'équipe transmis à chaque CLI : Claude (--mcp-config), Codex (-c pré-approuvé), Gemini/Qwen/OpenCode (fichier temporaire)", () => {
+  const s = [{ name: "nexus", command: "/usr/bin/node", args: ["/x/mcp.cjs"], env: { NEXUS_BUS_TOKEN: "t0k" } }];
+  const cl = claudeMcpArgs(s, "manual");
+  assert.equal(cl[0], "--mcp-config");
+  assert.deepEqual(JSON.parse(cl[1]!).mcpServers.nexus, {
+    command: "/usr/bin/node",
+    args: ["/x/mcp.cjs"],
+    env: { NEXUS_BUS_TOKEN: "t0k" },
+  });
+  assert.deepEqual(cl.slice(2), ["--allowedTools", "mcp__nexus"], "outils autorisés en mode avec validation");
+  assert.deepEqual(claudeMcpArgs(s, "autonomous").length, 2);
+  assert.deepEqual(claudeMcpArgs(undefined, "manual"), []);
+  const cx = codexMcpArgs(s);
+  assert.ok(cx.includes(`mcp_servers.nexus.command="/usr/bin/node"`));
+  assert.ok(cx.includes(`mcp_servers.nexus.env={NEXUS_BUS_TOKEN="t0k"}`));
+  assert.ok(cx.includes(`mcp_servers.nexus.default_tools_approval_mode="approve"`));
+  for (const [id, env] of [
+    ["gemini-cli", "GEMINI_CLI_SYSTEM_SETTINGS_PATH"],
+    ["qwen-cli", "QWEN_CODE_SYSTEM_SETTINGS_PATH"],
+    ["opencode-cli", "OPENCODE_CONFIG"],
+  ] as const) {
+    const m = mcpConfigFor(id, s)!;
+    const file = m.env[env]!;
+    const cfg = JSON.parse(readFileSync(file, "utf8"));
+    assert.ok(
+      id === "opencode-cli" ? cfg.mcp.nexus.command[0] === "/usr/bin/node" : cfg.mcpServers.nexus.trust === true,
+      id,
+    );
+    m.cleanup();
+    assert.throws(() => readFileSync(file), "fichier temporaire supprimé");
+  }
+  assert.equal(mcpConfigFor("hermes-cli", s), undefined);
+  assert.equal(stripAnsi("\x1b[0m> build\x1b[32m ok\x1b[0m"), "> build ok");
 });

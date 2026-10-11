@@ -6,10 +6,24 @@ export { EventSequencer, runCliTask, type CliTask, type EventBody, type OutputNo
 export {
   CLAUDE_MANIFEST,
   ClaudeCliConnector,
+  claudeMcpArgs,
   claudePermissionArgs,
   createClaudeNormalizer,
   refuse,
   type ClaudeConnectorOptions,
 } from "./cli/claude.ts";
-export { CODEX_MANIFEST, CodexCliConnector, codexSandboxArgs, createCodexNormalizer } from "./cli/codex.ts";
-export { GENERIC_INVOCATIONS, GenericCliConnector, plainTextNormalizer, type GenericCliConfig } from "./cli/generic.ts";
+export {
+  CODEX_MANIFEST,
+  CodexCliConnector,
+  codexMcpArgs,
+  codexSandboxArgs,
+  createCodexNormalizer,
+} from "./cli/codex.ts";
+export {
+  GENERIC_INVOCATIONS,
+  GenericCliConnector,
+  mcpConfigFor,
+  plainTextNormalizer,
+  stripAnsi,
+  type GenericCliConfig,
+} from "./cli/generic.ts";

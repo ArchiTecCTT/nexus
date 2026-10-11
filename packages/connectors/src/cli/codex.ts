@@ -81,15 +81,40 @@ export function createCodexNormalizer(): OutputNormalizer & { stats(): { malform
   };
 }
 
+/** Serveurs MCP de Nexus pour Codex : surcharges de configuration `-c mcp_servers.<nom>.*` (valeurs TOML). */
+export function codexMcpArgs(servers: AgentTaskRequest["mcpServers"]): string[] {
+  const out: string[] = [];
+  for (const s of servers ?? []) {
+    const env = Object.entries(s.env)
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .join(", ");
+    out.push(
+      "-c",
+      `mcp_servers.${s.name}.command=${JSON.stringify(s.command)}`,
+      "-c",
+      `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`,
+      "-c",
+      `mcp_servers.${s.name}.env={${env}}`,
+      // Outils de l'équipe pré-approuvés : en exécution non interactive, personne ne peut les approuver.
+      "-c",
+      `mcp_servers.${s.name}.default_tools_approval_mode="approve"`,
+    );
+  }
+  return out;
+}
+
 /** Options de bac à sable de Codex : complément de défense, jamais substitut à l'isolation OS. */
 export function codexSandboxArgs(mode: PermissionMode): string[] {
-  if (mode === "read-only") return ["--sandbox", "read-only"];
+  // En exécution non interactive, personne ne peut répondre à une demande d'autorisation : sans `approval_policy="never"`,
+  // Codex reste bloqué (constaté avec codex-cli 0.162 en workspace-write). Son bac à sable reste actif.
+  const never = ["-c", 'approval_policy="never"'];
+  if (mode === "read-only") return ["--sandbox", "read-only", ...never];
   // Vérifié avec codex-cli 0.162 : accès complet en mode Autonome.
   if (mode === "autonomous") return ["--sandbox", "danger-full-access"];
   // Dans la sandbox de Nexus, le bac à sable propre de Codex ne peut pas s'imbriquer (seccomp refuse les namespaces) :
   // l'option prévue pour un environnement déjà isolé de l'extérieur est utilisée.
   if (mode === "sandbox-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  return ["--sandbox", "workspace-write"];
+  return ["--sandbox", "workspace-write", ...never];
 }
 
 export class CodexCliConnector implements AgentConnector {
@@ -127,6 +152,7 @@ export class CodexCliConnector implements AgentConnector {
     return this.#run(req, signal, [
       "exec",
       "--json",
+      ...codexMcpArgs(req.mcpServers),
       // Sans cela, Codex refuse un dossier qui n'est pas un dépôt Git (mode Autonome sur un projet sans Git).
       "--skip-git-repo-check",
       ...codexSandboxArgs(this.#resolveMode(req.permissionsPolicyId)),
@@ -138,6 +164,7 @@ export class CodexCliConnector implements AgentConnector {
     return this.#run(req, signal, [
       "exec",
       "resume",
+      ...codexMcpArgs(req.mcpServers),
       "--json",
       "--skip-git-repo-check",
       ...codexSandboxArgs(this.#resolveMode(req.permissionsPolicyId)),

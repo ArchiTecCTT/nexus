@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 // Sonde non intrusive d'une CLI : résolution PATH sûre puis `--version` avec délai court.
 // Jamais d'authentification, de téléchargement ni de lecture de dossiers d'identifiants (UC-01, AC-01, AC-14).
 import type { ProbeResult } from "@nexus/contracts";
@@ -14,6 +16,8 @@ export type ProbeContext = {
   cwd?: string;
   /** HOME de l'utilisateur, transmis aux seules commandes d'état de connexion documentées. */
   home?: string;
+  /** Environnement de l'utilisateur (présence de clés API seulement ; valeurs jamais lues ni conservées). */
+  env?: Record<string, string | undefined>;
 };
 
 export async function probeCli(sig: CliSignature, ctx: ProbeContext): Promise<ProbeResult> {
@@ -72,14 +76,21 @@ export async function probeCli(sig: CliSignature, ctx: ProbeContext): Promise<Pr
         timeoutMs: sig.probeTimeoutMs,
         killGraceMs: 500,
         maxOutputBytes: 64 * 1024,
-        onChunk: (c, ch) => {
-          if (ch === "stdout") authOut += c;
+        // Certains CLI (Codex) écrivent leur état sur stderr.
+        onChunk: (c) => {
+          authOut += c;
         },
       });
       if (!a.timedOut && !a.spawnError) authenticated = sig.authStatus.parse(authOut);
     } catch {
       authenticated = undefined;
     }
+  }
+  if (sig.authPresence && authenticated === undefined && ctx.home) {
+    const home = ctx.home;
+    authenticated =
+      sig.authPresence.files.some((f) => existsSync(join(home, f))) ||
+      sig.authPresence.env.some((v) => Boolean(ctx.env?.[v]));
   }
   return {
     ...base,

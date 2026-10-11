@@ -17,6 +17,11 @@ export type CliSignature = {
    * (ex. `claude auth status --json`). Seul le booléen est retenu ; aucune donnée personnelle n'est conservée.
    */
   authStatus?: { args: readonly string[]; parse: (stdout: string) => boolean | undefined };
+  /**
+   * CLI sans commande d'état : connexion déduite de la PRÉSENCE (jamais du contenu) d'un fichier de session dans le HOME
+   * ou d'une variable de clé API dans l'environnement de l'utilisateur.
+   */
+  authPresence?: { files: readonly string[]; env: readonly string[] };
 };
 
 const semver = /(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/;
@@ -50,6 +55,10 @@ export const CLI_SIGNATURES: readonly CliSignature[] = [
     versionPattern: semver,
     probeTimeoutMs: 8000,
     agent: true,
+    authStatus: {
+      args: ["login", "status"],
+      parse: (out) => (/not logged in/i.test(out) ? false : /logged in/i.test(out) ? true : undefined),
+    },
   },
   {
     connectorId: "gemini-cli",
@@ -59,6 +68,10 @@ export const CLI_SIGNATURES: readonly CliSignature[] = [
     versionPattern: semver,
     probeTimeoutMs: 8000,
     agent: true,
+    authPresence: {
+      files: [".gemini/oauth_creds.json"],
+      env: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"],
+    },
   },
   {
     connectorId: "hermes-cli",
@@ -86,6 +99,7 @@ export const CLI_SIGNATURES: readonly CliSignature[] = [
     versionPattern: semver,
     probeTimeoutMs: 8000,
     agent: true,
+    authPresence: { files: [".qwen/oauth_creds.json"], env: ["DASHSCOPE_API_KEY", "OPENAI_API_KEY"] },
   },
   {
     connectorId: "git",

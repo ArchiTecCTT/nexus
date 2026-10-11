@@ -161,6 +161,22 @@ export function claudePermissionArgs(mode: PermissionMode): string[] {
   }
 }
 
+/**
+ * Serveurs MCP de Nexus (messagerie de l'équipe) : configuration JSON en ligne (le mode MCP strict garantit que seuls
+ * ceux-ci sont chargés) ; en mode avec validation, leurs outils sont explicitement autorisés.
+ */
+export function claudeMcpArgs(servers: AgentTaskRequest["mcpServers"], mode: PermissionMode): string[] {
+  if (!servers?.length) return [];
+  const mcpServers = Object.fromEntries(servers.map((s) => [s.name, { command: s.command, args: s.args, env: s.env }]));
+  return [
+    "--mcp-config",
+    JSON.stringify({ mcpServers }),
+    ...(mode === "manual" || mode === "notify" || mode === "read-only"
+      ? ["--allowedTools", ...servers.map((s) => `mcp__${s.name}`)]
+      : []),
+  ];
+}
+
 export type ClaudeConnectorOptions = {
   probeContext: ProbeContext;
   /** Chemin absolu du binaire (issu de la sonde). */
@@ -205,7 +221,15 @@ export class ClaudeCliConnector implements AgentConnector {
     return runCliTask({
       taskId: req.taskId,
       file: this.#binary,
-      args: ["--print", "--output-format", "stream-json", "--verbose", ...sessionArgs, ...claudePermissionArgs(mode)],
+      args: [
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        ...sessionArgs,
+        ...claudePermissionArgs(mode),
+        ...claudeMcpArgs(req.mcpServers, mode),
+      ],
       stdin: req.prompt,
       cwd: req.workspacePath,
       env: { ...this.#opts.baseEnv },
