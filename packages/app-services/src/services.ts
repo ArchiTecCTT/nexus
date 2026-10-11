@@ -1,5 +1,5 @@
 // Câblage applicatif (Node pur, sans Electron) : ouvert par le main Electron et par les tests d'intégration.
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConnector, AgentEvent, IpcPushEvent, PermissionMode, ProbeResult } from "@nexus/contracts";
 import {
@@ -29,6 +29,7 @@ import { VoiceController } from "./voice.ts";
 import { DEFAULT_SETTINGS, SettingsStore } from "./settings.ts";
 import { TerminalManager } from "./terminals.ts";
 import { InteractiveSessions } from "./interactive.ts";
+import { Orchestra } from "./orchestra.ts";
 import { ProjectWatcher } from "./watch.ts";
 import { runInSandbox } from "./sandbox-run.ts";
 import type { AppSettings } from "@nexus/contracts";
@@ -68,6 +69,8 @@ export class AppServices {
   readonly sandbox: SandboxCapabilities;
   /** Sessions d'agent interactives (TUI dans un terminal). */
   readonly interactive: InteractiveSessions;
+  /** Chef d'orchestre autonome (équipes multi-agents). */
+  readonly orchestra: Orchestra;
   readonly git: GitBroker | undefined;
   readonly probeContext: ProbeContext;
   readonly voice: VoiceController;
@@ -78,6 +81,7 @@ export class AppServices {
   readonly pendingPushes = new Map<string, { repo: string; plan: PreparedPush }>();
   readonly pendingDeployments = new Map<string, PreparedDeployment>();
   /** Mode de permission par dossier de travail, enregistré à la création du worktree de la tâche. */
+  readonly #missionWorkspaces = new Map<string, string>();
   readonly #workspaceModes = new Map<
     string,
     { mode: PermissionMode; protectEnvFiles: boolean; connectorId: string; taskId: string }
@@ -147,8 +151,11 @@ export class AppServices {
       sandbox: this.sandbox,
       home: opts.home,
       userEnv: () => opts.userEnv ?? { HOME: opts.home, PATH: opts.pathEnv },
+      pathEnv: opts.pathEnv,
       push,
+      transcriptsDir: join(opts.userDataDir, "transcripts"),
     });
+    this.orchestra = new Orchestra(this);
     this.watcher = new ProjectWatcher((projectId, changes) => push({ type: "fs", projectId, changes }));
     this.settings.onChange((s) => this.#applySettings(s));
     const gitPath = locateGit(opts.pathEnv);
@@ -201,7 +208,11 @@ export class AppServices {
       ? new GitBroker({ gitPath, home: opts.home, worktreesRoot: join(opts.userDataDir, "worktrees") })
       : undefined;
 
-    const probeContext: ProbeContext = { pathEnv: opts.pathEnv, home: opts.home };
+    const probeContext: ProbeContext = {
+      pathEnv: opts.pathEnv,
+      home: opts.home,
+      ...(opts.userEnv && { env: opts.userEnv }),
+    };
     const registry = new ConnectorRegistry();
     // L'objet services n'existe pas encore : runner et résolution de mode passent par une référence tardive.
     const ref: { svc?: AppServices } = {};
@@ -234,6 +245,7 @@ export class AppServices {
     const execution = {
       connectorFor: (id: string) => registry.get(id),
       workspaceFor: (taskId: string) => ref.svc!.workspaceFor(taskId),
+      mcpFor: (taskId: string, connectorId: string) => ref.svc?.orchestra.mcpFor(taskId, connectorId),
       sandboxAvailable: sandboxUsable(sandbox),
     };
     const core = await NexusCore.open({
@@ -249,6 +261,7 @@ export class AppServices {
   }
 
   async close(): Promise<void> {
+    this.orchestra.closeAll();
     this.terminals.killAll();
     this.watcher.closeAll();
     await this.core.close();
@@ -279,6 +292,11 @@ export class AppServices {
    * Dossier de travail d'une tâche (ADR-008) : worktree isolé et branche dédiée pour toute tâche qui écrit ;
    * le projet principal n'est jamais modifié directement par un agent.
    */
+  /** Copie de travail commune à toutes les tâches d'une mission (Orchestre). */
+  setMissionWorkspace(missionId: string, path: string): void {
+    this.#missionWorkspaces.set(missionId, path);
+  }
+
   async workspaceFor(taskId: string): Promise<string> {
     const task = await this.core.missions.getTask(taskId);
     const mission = await this.core.missions.get(task.missionId);
@@ -290,7 +308,9 @@ export class AppServices {
     const mode = (agent?.permissionMode ?? "manual") as PermissionMode;
     let workspace: string;
     // Autonome : l'agent agit directement dans le projet (choix du propriétaire). Lecture seule : rien à isoler.
-    if (mode === "read-only" || mode === "autonomous") workspace = project.rootPath;
+    const shared = this.#missionWorkspaces.get(task.missionId);
+    if (shared) workspace = shared;
+    else if (mode === "read-only" || mode === "autonomous") workspace = project.rootPath;
     else {
       if (!project.isGitRepository || !this.git) {
         throw new DomainError("policy_denied", "Une tâche qui écrit exige un dépôt Git (worktree isolé, ADR-008)");
@@ -329,13 +349,17 @@ export class AppServices {
         durationMs: 0,
       };
     }
+    // Plusieurs agents peuvent partager un dossier (Orchestre) : le profil réseau est celui du binaire lancé.
+    const real = (p: string) => (existsSync(p) ? realpathSync(p) : p);
+    const byBinary = this.#inventory.find((r) => r.path && real(r.path) === real(o.file))?.connectorId;
     return runInSandbox(o, {
       caps: this.sandbox,
-      connectorId: ws.connectorId,
+      connectorId: byBinary ?? ws.connectorId,
       home: this.#opts.home,
       protectEnvFiles: ws.protectEnvFiles,
       extraAllow: this.settings.get().sandboxExtraAllow,
       onDenied: (target, reason) => this.#opts.push?.({ type: "sandbox-denied", taskId: ws.taskId, target, reason }),
+      pathEnv: this.#opts.pathEnv,
     });
   }
 

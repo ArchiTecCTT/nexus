@@ -642,3 +642,84 @@ test("plan de déploiement : analyse, IA qui pilote, coffre, confirmation native
     "aucun secret dans le plan",
   );
 });
+
+test("sessions : relance d'une session terminée, historique du terminal, suppression, séparation par projet", async (t) => {
+  const { root, repo, call, events } = await setup(t);
+  const p = await call("projects.open", { rootPath: repo });
+  // Relance d'une session autonome terminée (nouveau message dans la conversation).
+  const s = await call("sessions.start", {
+    projectId: p.projectId,
+    connectorId: "fake-agent",
+    prompt: "Premier",
+    mode: "autonomous",
+  });
+  await until(async () => (await call("sessions.list", { projectId: p.projectId }))[0]?.status === "completed");
+  await call("sessions.followUp", { taskId: s.taskId, prompt: "Deuxième" });
+  await until(async () => readFileSync(join(repo, "agent-output.txt"), "utf8").includes("Deuxième"));
+  await until(async () => (await call("sessions.list", { projectId: p.projectId }))[0]?.status === "completed");
+
+  // Session en terminal : sa sortie est conservée et relisible après la fin.
+  const i = await call("sessions.startInteractive", {
+    projectId: p.projectId,
+    connectorId: "fake-tui",
+    mode: "autonomous",
+    prompt: "garde-moi",
+    cols: 80,
+    rows: 24,
+  });
+  await until(() => termOut(events, i.terminalId).includes("GOT:garde-moi"));
+  await assert.rejects(
+    call("sessions.delete", { taskId: i.taskId }),
+    (e: unknown) => e instanceof ExposedError && e.code === "conflict",
+    "suppression refusée pendant l'exécution",
+  );
+  await call("terminal.write", { terminalId: i.terminalId, data: "bye\r" });
+  await until(
+    async () =>
+      (await call("sessions.list", { projectId: p.projectId })).find((x) => x.taskId === i.taskId)?.status ===
+      "completed",
+  );
+  await until(async () => (await call("sessions.transcript", { taskId: i.taskId })).data.includes("GOT:garde-moi"));
+
+  // Un autre projet n'affiche pas ces sessions.
+  const other = join(root, "autre");
+  mkdirSync(other);
+  const p2 = await call("projects.open", { rootPath: other });
+  assert.deepEqual(await call("sessions.list", { projectId: p2.projectId }), []);
+
+  // Suppression : disparaît de la liste, historique effacé.
+  await call("sessions.delete", { taskId: i.taskId });
+  assert.ok(!(await call("sessions.list", { projectId: p.projectId })).some((x) => x.taskId === i.taskId));
+  assert.equal((await call("sessions.transcript", { taskId: i.taskId })).data, "");
+});
+
+test("messages d'erreur dans la langue choisie (anglais)", async (t) => {
+  const { call } = await setup(t);
+  const s = await call("settings.get", {});
+  await assert.rejects(
+    call("projects.open", { rootPath: "/nexistepas/du/tout" }),
+    (e: unknown) => e instanceof ExposedError && e.message === "Ce chemin n'est pas un dossier",
+  );
+  await call("settings.set", { ...s, language: "en" });
+  await assert.rejects(
+    call("projects.open", { rootPath: "/nexistepas/du/tout" }),
+    (e: unknown) => e instanceof ExposedError && e.message === "This path is not a folder",
+  );
+  await assert.rejects(
+    call("sessions.delete", { taskId: "00000000-0000-4000-8000-000000000009" }),
+    (e: unknown) => e instanceof ExposedError && /not found/i.test(e.message),
+  );
+});
+
+test("fichier supprimé hors de Nexus pendant qu'il est ouvert : « introuvable », jamais une erreur interne", async (t) => {
+  const { repo, call } = await setup(t);
+  const p = await call("projects.open", { rootPath: repo });
+  await assert.rejects(
+    call("files.read", { projectId: p.projectId, path: "src/disparu.ts" }),
+    (e: unknown) => e instanceof ExposedError && e.code === "not_found",
+  );
+  await assert.rejects(
+    call("files.list", { projectId: p.projectId, dir: "absent" }),
+    (e: unknown) => e instanceof ExposedError && e.code === "not_found",
+  );
+});

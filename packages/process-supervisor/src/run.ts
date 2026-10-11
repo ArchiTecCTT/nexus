@@ -11,7 +11,18 @@ import { createLineSplitter } from "./lines.ts";
 import { createRedactor, redactKnownTokenPatterns } from "./redact.ts";
 
 const UNSHARE = "/usr/bin/unshare";
-const PIDNS_PREFIX = ["--user", "--map-current-user", "--pid", "--fork", "--kill-child=SIGKILL", "--"];
+// `--mount --mount-proc` : /proc propre au namespace. Sans lui, /proc est celui de l'hôte et les numéros de processus
+// ne correspondent pas : un outil qui suit ses enfants via /proc ne voit jamais leur fin (constaté avec Codex).
+const PIDNS_PREFIX = [
+  "--user",
+  "--map-current-user",
+  "--pid",
+  "--fork",
+  "--kill-child=SIGKILL",
+  "--mount",
+  "--mount-proc",
+  "--",
+];
 
 /**
  * - `pid-namespace` (défaut) : la commande est placée dans un PID namespace dédié via unshare ;

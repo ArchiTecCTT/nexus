@@ -2,7 +2,18 @@
 // directement. En mode « Autonome en sandbox », le terminal entier tourne dans la sandbox.
 // L'état de l'agent vient de ses hooks (Claude : UserPromptSubmit, Notification, Stop…), écrits dans un fichier que
 // Nexus surveille : on ne devine jamais l'état à partir du texte affiché.
-import { closeSync, mkdtempSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcPushEvent, PermissionMode } from "@nexus/contracts";
@@ -44,11 +55,18 @@ export function interactiveArgs(
       ];
     case "gemini-cli":
     case "qwen-cli":
-      return [...(free ? ["--yolo"] : []), ...(o.prompt ? ["--prompt-interactive", o.prompt] : [])];
+      return [
+        ...(connectorId === "gemini-cli" ? ["--skip-trust"] : []),
+        ...(o.resume ? (connectorId === "gemini-cli" ? ["--resume", "latest"] : ["--continue"]) : []),
+        ...(free ? ["--yolo"] : []),
+        ...(o.prompt && !o.resume ? ["--prompt-interactive", o.prompt] : []),
+      ];
     // Hermes : pas d'option de consigne initiale en mode interactif ; elle est tapée dans le terminal (voir `typedPrompt`).
     case "hermes-cli":
       return [...(o.resume ? ["--continue"] : []), ...(free ? ["--yolo"] : [])];
-    // Autres CLI : un argument libre serait mal interprété (OpenCode y attend un dossier) ; consigne tapée dans le terminal.
+    case "opencode-cli":
+      return [...(o.resume ? ["--continue"] : []), ...(o.prompt && !o.resume ? ["--prompt", o.prompt] : [])];
+    // Autres CLI : un argument libre serait mal interprété ; consigne tapée dans le terminal.
     default:
       return [];
   }
@@ -56,7 +74,7 @@ export function interactiveArgs(
 
 /** Vrai si la consigne initiale doit être tapée dans la TUI (CLI sans option de consigne interactive). */
 export function typedPrompt(connectorId: string): boolean {
-  return !["claude-cli", "codex-cli", "gemini-cli", "qwen-cli"].includes(connectorId);
+  return !["claude-cli", "codex-cli", "gemini-cli", "qwen-cli", "opencode-cli"].includes(connectorId);
 }
 
 /** Réglages Claude injectés via `--settings` : chaque hook ajoute une ligne d'état au fichier surveillé. */
@@ -79,8 +97,14 @@ type Deps = {
   sandbox: SandboxCapabilities;
   home: string;
   userEnv: () => Record<string, string>;
+  pathEnv: string;
   push: (e: IpcPushEvent) => void;
+  /** Dossier des enregistrements de terminal des sessions. */
+  transcriptsDir: string;
 };
+
+/** Au-delà, seule la fin de l'enregistrement est conservée. */
+const TRANSCRIPT_MAX = 4 * 1024 * 1024;
 
 export type InteractiveStart = {
   taskId: string;
@@ -162,6 +186,7 @@ export class InteractiveSessions {
           protectEnvFiles: o.protectEnvFiles,
           extraAllow: this.#d.settings.get().sandboxExtraAllow,
           extraWritable: [hookDir],
+          pathEnv: this.#d.pathEnv,
           extraEnv: { NEXUS_HOOK_FILE: hookFile },
           onDenied: (target, reason) => this.#d.push({ type: "sandbox-denied", taskId: o.taskId, target, reason }),
         });
@@ -200,25 +225,70 @@ export class InteractiveSessions {
       }
     }, 250);
 
-    const onExit = (code: number | null) => {
+    // Agents sans hooks (Codex, Gemini, OpenCode…) : état déduit de l'activité du terminal, jamais de son texte :
+    // sortie en cours → « travaille », 4 s de silence → « en attente de vous ».
+    const hooks = o.connectorId === "claude-cli";
+    let quiet: ReturnType<typeof setTimeout> | undefined;
+    const onActivity = hooks
+      ? undefined
+      : () => {
+          if (this.#byTask.get(o.taskId)?.status !== "working") this.#status(o.taskId, "working");
+          if (quiet) clearTimeout(quiet);
+          quiet = setTimeout(() => this.#byTask.has(o.taskId) && this.#status(o.taskId, "idle"), 4000);
+        };
+
+    // Conversation conservée : la sortie du terminal est ajoutée au fichier de la session (relue plus tard).
+    mkdirSync(this.#d.transcriptsDir, { recursive: true, mode: 0o700 });
+    const transcript = join(this.#d.transcriptsDir, `${o.taskId}.log`);
+    if (o.resume) appendFileSync(transcript, "\r\n\x1b[2m── reprise ──\x1b[0m\r\n", { mode: 0o600 });
+    let buffered = "";
+    const flushTranscript = () => {
+      if (!buffered) return;
+      appendFileSync(transcript, buffered, { mode: 0o600 });
+      buffered = "";
+      if (statSync(transcript).size > TRANSCRIPT_MAX * 1.25) {
+        const all = readFileSync(transcript);
+        writeFileSync(transcript, all.subarray(all.length - TRANSCRIPT_MAX), { mode: 0o600 });
+      }
+    };
+    const transcriptTimer = setInterval(flushTranscript, 1000);
+    const onOutput = (d: string) => {
+      buffered += d;
+    };
+
+    const onExit = (code: number | null, signal?: number) => {
+      clearInterval(transcriptTimer);
+      flushTranscript();
       clearInterval(poll);
+      if (quiet) clearTimeout(quiet);
       this.#byTask.delete(o.taskId);
       void (async () => {
         await cleanup().catch(() => undefined);
         rmSync(hookDir, { recursive: true, force: true });
-        const ok = code === 0;
+        // Tué par un signal (onglet fermé, arrêt) : interrompue, jamais « terminée ».
+        const ok = code === 0 && !signal;
         this.#d.push({ type: "agent-status", taskId: o.taskId, status: ok ? "done" : "error" });
         if (!track) return;
-        const to = !ok ? "failed" : o.mode === "autonomous" ? "completed" : "waiting_review";
+        const to = signal ? "interrupted" : !ok ? "failed" : o.mode === "autonomous" ? "completed" : "waiting_review";
         await core.missions
-          .transition(o.taskId, to, SYSTEM, ok ? {} : { failureCode: "cli_exit" })
+          .transition(
+            o.taskId,
+            to,
+            SYSTEM,
+            signal ? { reason: "terminal_closed" } : ok ? {} : { failureCode: "cli_exit" },
+          )
           .catch(() => undefined);
       })();
     };
 
     let terminalId: string;
     try {
-      terminalId = this.#d.terminals.create(o.workspace, o.cols, o.rows, { ...command, onExit }).terminalId;
+      terminalId = this.#d.terminals.create(o.workspace, o.cols, o.rows, {
+        ...command,
+        onExit,
+        onOutput,
+        ...(onActivity && { onActivity }),
+      }).terminalId;
     } catch (e) {
       onExit(null);
       throw e;

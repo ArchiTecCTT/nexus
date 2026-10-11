@@ -17,6 +17,7 @@ import {
 import { locateGit } from "@nexus/git";
 import { runProcess } from "@nexus/process-supervisor";
 import type { AppHandlers } from "./handlers.ts";
+import { localizeMessage } from "./messages.ts";
 import type { AppServices } from "./services.ts";
 
 type Exposed = (
@@ -222,14 +223,17 @@ export function createDeployHandlers(
                   type: "deploy-log",
                   projectId: p.id,
                   stepId: step.id,
-                  line: broker.redact(line).slice(0, 2000),
+                  line: localizeMessage(broker.redact(line), svc.settings.get().language).slice(0, 2000),
                 }),
               projectName: serviceName(basename(p.rootPath)),
             },
             plan,
             step.id,
           );
-          return mark("done", { message: broker.redact(out.message), ...(out.url && { url: out.url }) });
+          return mark("done", {
+            message: localizeMessage(broker.redact(out.message), svc.settings.get().language),
+            ...(out.url && { url: out.url }),
+          });
         } catch (e) {
           const err = toExposed(e);
           mark("failed", { message: err.message.slice(0, 2000) });

@@ -68,7 +68,17 @@ export class TerminalManager {
     cwd: string,
     cols: number,
     rows: number,
-    command?: { file: string; args: string[]; env: Record<string, string>; onExit?: (code: number | null) => void },
+    command?: {
+      file: string;
+      args: string[];
+      env: Record<string, string>;
+      /** Fin du programme ; `signal` renseigné s'il a été tué (fermeture de l'onglet, arrêt…). */
+      onExit?: (code: number | null, signal?: number) => void;
+      /** Activité du terminal (sortie reçue), pour l'état des agents sans hooks. */
+      onActivity?: () => void;
+      /** Sortie brute (enregistrement de la conversation d'un agent). */
+      onOutput?: (data: string) => void;
+    },
   ): { terminalId: string; shell: string; cwd: string } {
     if (this.#terminals.size >= MAX_TERMINALS) throw new Error(`Trop de terminaux ouverts (maximum ${MAX_TERMINALS})`);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error("Dossier du terminal introuvable");
@@ -107,6 +117,8 @@ export class TerminalManager {
       }
     };
     pty.onData((d) => {
+      command?.onActivity?.();
+      command?.onOutput?.(d);
       pending += d;
       if (!paused && pending.length > PAUSE_ABOVE_CHARS && pty.pause) {
         paused = true;
@@ -120,7 +132,7 @@ export class TerminalManager {
       this.#terminals.delete(terminalId);
       const code = Number.isInteger(e.exitCode) ? e.exitCode : null;
       this.#onExit(terminalId, code);
-      command?.onExit?.(code);
+      command?.onExit?.(code, e.signal || undefined);
     });
     this.#terminals.set(terminalId, pty);
     return { terminalId, shell, cwd };

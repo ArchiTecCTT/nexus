@@ -1,5 +1,5 @@
 // Handlers de l'espace de travail façon IDE : projets, fichiers, terminaux, sessions d'agent simples, Git, réglages.
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 import type { Capability, PermissionMode } from "@nexus/contracts";
 import { OWNER } from "@nexus/core";
@@ -69,6 +69,18 @@ export function createWorkspaceHandlers(
       : undefined;
     return wt?.path ?? rootPath;
   };
+
+  // Sessions supprimées par l'utilisateur : masquées partout. Le journal d'événements, en ajout seul, garde la trace
+  // (audit) ; la copie isolée et l'enregistrement du terminal sont effacés.
+  const deletedFile = join(svc.userDataDir, "deleted-sessions.json");
+  const deleted = (): Set<string> => {
+    try {
+      return new Set(JSON.parse(readFileSync(deletedFile, "utf8")) as string[]);
+    } catch {
+      return new Set();
+    }
+  };
+  const transcriptOf = (taskId: string) => join(svc.userDataDir, "transcripts", `${taskId}.log`);
 
   /** Crée la tâche d'une session (équipe « Agents », profil d'agent et mission implicites). */
   const createSession = async (req: {
@@ -310,6 +322,52 @@ export function createWorkspaceHandlers(
           }),
         );
       }),
+    "orchestra.start": (req) => guard(async () => ({ missionId: await svc.orchestra.start(req) })),
+    "orchestra.list": (req) => guard(() => svc.orchestra.list(req.projectId)),
+    "orchestra.get": (req) => guard(() => svc.orchestra.get(req.missionId)),
+    "orchestra.approvePlan": (req) =>
+      guard(() => {
+        svc.orchestra.approvePlan(req.missionId);
+        return { ok: true as const };
+      }),
+    "orchestra.stop": (req) =>
+      guard(() => {
+        svc.orchestra.stop(req.missionId);
+        return { ok: true as const };
+      }),
+    "orchestra.changes": (req) => guard(() => svc.orchestra.changes(req.missionId)),
+    "orchestra.merge": (req) => guard(async () => ({ summary: await svc.orchestra.merge(req.missionId) })),
+    "orchestra.message": (req) =>
+      guard(() => {
+        svc.orchestra.message(req.missionId, req.text);
+        return { ok: true as const };
+      }),
+    "sessions.delete": (req) =>
+      guard(async () => {
+        const task = await core.missions.getTask(req.taskId);
+        if (svc.interactive.get(req.taskId) || ["running", "queued"].includes(task.status)) {
+          throw exposed("conflict", "Impossible de supprimer une session en cours : arrêtez-la d'abord");
+        }
+        const mission = await core.missions.get(task.missionId);
+        const p = await project(mission.projectId);
+        if (svc.git && p.isGitRepository) {
+          const wt = (await svc.git.listTaskWorktrees(p.rootPath)).find((w) => w.branch === `nexus/task-${req.taskId}`);
+          if (wt) await svc.git.removeWorktree(p.rootPath, wt.path, { force: true, deleteBranch: true });
+        }
+        rmSync(transcriptOf(req.taskId), { force: true });
+        const set = deleted();
+        set.add(req.taskId);
+        writeFileSync(deletedFile, JSON.stringify([...set]), { mode: 0o600 });
+        return { ok: true as const };
+      }),
+    "sessions.transcript": (req) =>
+      guard(() => {
+        const file = transcriptOf(req.taskId);
+        if (!existsSync(file)) return { data: "", truncated: false };
+        const buf = readFileSync(file);
+        const max = 1024 * 1024;
+        return { data: buf.subarray(Math.max(0, buf.length - max)).toString("utf8"), truncated: buf.length > max };
+      }),
     "sessions.resumeInteractive": (req) =>
       guard(async () => {
         const open = svc.interactive.get(req.taskId);
@@ -370,7 +428,9 @@ export function createWorkspaceHandlers(
           where: { missionId: { in: missions.map((m) => m.id) } },
         });
         const out = [];
+        const hidden = deleted();
         for (const t of tasks.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+          if (hidden.has(t.id)) continue;
           const a = t.assignedAgentId ? agents.get(t.assignedAgentId) : undefined;
           const live = svc.interactive.get(t.id);
           const mode: "autonomous" | "sandboxed" | "supervised" | "other" =
@@ -392,15 +452,14 @@ export function createWorkspaceHandlers(
     "sessions.followUp": (req) =>
       guard(async () => {
         if (!core.runs) throw exposed("unavailable", "Exécution indisponible");
-        const task = await core.missions.getTask(req.taskId);
-        if (!["waiting_review", "failed", "interrupted"].includes(task.status)) {
-          throw exposed(
-            "conflict",
-            task.status === "running"
-              ? "La session est déjà en cours"
-              : "Session terminée : démarrez une nouvelle session",
-          );
+        // Session ouverte dans le terminal de l'agent : le message y est tapé, comme si l'utilisateur l'écrivait.
+        const live = svc.interactive.get(req.taskId);
+        if (live) {
+          svc.terminals.write(live.terminalId, `${req.prompt.replace(/\r?\n/g, " ")}\r`);
+          return { ok: true as const };
         }
+        const task = await core.missions.getTask(req.taskId);
+        if (["running", "queued"].includes(task.status)) throw exposed("conflict", "La session est déjà en cours");
         core.runs.execute(req.taskId, OWNER, { resume: true, prompt: req.prompt }).catch(() => undefined);
         return { ok: true as const };
       }),

@@ -3,7 +3,17 @@
 // - Connexion : la session du CLI (ex. ~/.claude) est montée dans SA sandbox, pour qu'il fonctionne (choix de l'utilisateur).
 // - Réseau : aucun accès direct ; un proxy hôte n'autorise que les domaines du fournisseur (+ ceux ajoutés dans les
 //   réglages). Un pont socat expose ce proxy dans la sandbox, et HTTPS_PROXY y pointe.
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxProfile } from "@nexus/contracts";
@@ -22,21 +32,63 @@ const SOCAT = "/usr/bin/socat";
 /** Domaines nécessaires à chaque fournisseur (hôte:port) et dossiers de session du CLI (relatifs au HOME). */
 export const PROVIDER_PROFILES: Record<
   string,
-  { allow: string[]; credentialPaths: string[]; env?: Record<string, string> }
+  {
+    allow: string[];
+    credentialPaths: string[];
+    /** Fichiers d'exécution du CLI hors de son binaire (relatifs au HOME), visibles en LECTURE SEULE au même chemin. */
+    runtimePaths?: string[];
+    env?: Record<string, string>;
+  }
 > = {
   "claude-cli": {
     allow: ["api.anthropic.com:443", "claude.ai:443", "console.anthropic.com:443", "platform.claude.com:443"],
     credentialPaths: [".claude", ".claude.json"],
     env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1" },
   },
-  "codex-cli": { allow: ["api.openai.com:443", "chatgpt.com:443", "auth.openai.com:443"], credentialPaths: [".codex"] },
+  "codex-cli": {
+    allow: ["api.openai.com:443", "chatgpt.com:443", "auth.openai.com:443", "ab.chatgpt.com:443"],
+    credentialPaths: [".codex"],
+  },
   "gemini-cli": {
-    allow: ["generativelanguage.googleapis.com:443", "oauth2.googleapis.com:443", "cloudcode-pa.googleapis.com:443"],
+    allow: [
+      "generativelanguage.googleapis.com:443",
+      "oauth2.googleapis.com:443",
+      "cloudcode-pa.googleapis.com:443",
+      "www.googleapis.com:443",
+      "play.googleapis.com:443",
+    ],
     credentialPaths: [".gemini"],
   },
-  "opencode-cli": { allow: [], credentialPaths: [".config/opencode", ".local/share/opencode"] },
-  "qwen-cli": { allow: [], credentialPaths: [".qwen"] },
-  "hermes-cli": { allow: [], credentialPaths: [] },
+  // Domaines par défaut des fournisseurs usuels ; un domaine manquant est signalé (« Autoriser ce domaine »).
+  "opencode-cli": {
+    allow: [
+      "opencode.ai:443",
+      "models.opencode.ai:443",
+      "models.dev:443",
+      "registry.npmjs.org:443",
+      "api.openai.com:443",
+      "api.anthropic.com:443",
+      "openrouter.ai:443",
+    ],
+    credentialPaths: [".config/opencode", ".local/share/opencode"],
+  },
+  "qwen-cli": {
+    allow: ["chat.qwen.ai:443", "portal.qwen.ai:443", "dashscope.aliyuncs.com:443", "dashscope-intl.aliyuncs.com:443"],
+    credentialPaths: [".qwen"],
+  },
+  "hermes-cli": {
+    allow: [
+      "inference-api.nousresearch.com:443",
+      "portal.nousresearch.com:443",
+      "openrouter.ai:443",
+      "api.openai.com:443",
+      "chatgpt.com:443",
+      "auth.openai.com:443",
+    ],
+    credentialPaths: [".hermes"],
+    // Le lanceur ~/.local/bin/hermes exécute l'environnement Python ~/.hermes/hermes-agent (interpréteur géré par uv).
+    runtimePaths: [".hermes/hermes-agent", ".local/share/uv/python"],
+  },
 };
 
 export function sandboxNetworkAvailable(): boolean {
@@ -64,16 +116,55 @@ type SandboxCtx = {
   extraEnv?: Record<string, string>;
   /** Connexion refusée par le proxy (domaine non autorisé, adresse privée…). */
   onDenied?: (target: string, reason: string) => void;
+  /** PATH de l'utilisateur : sert à retrouver SON Node pour les CLI écrites en Node (codex, gemini, qwen…). */
+  pathEnv?: string;
 };
+
+/** Première ligne d'un fichier (shebang), lue sur 200 octets au plus. */
+function shebang(file: string): string {
+  try {
+    const fd = openSync(file, "r");
+    const buf = Buffer.alloc(200);
+    const n = readSync(fd, buf, 0, 200, 0);
+    closeSync(fd);
+    const line = buf.subarray(0, n).toString("utf8").split("\n")[0] ?? "";
+    return line.startsWith("#!") ? line : "";
+  } catch {
+    return "";
+  }
+}
+
+function onPath(name: string, pathEnv: string | undefined): string | undefined {
+  for (const d of (pathEnv ?? "").split(":")) {
+    if (!d.startsWith("/")) continue;
+    const p = join(d, name);
+    if (existsSync(p)) return realpathSync(p);
+  }
+  return undefined;
+}
 
 /** Prépare le profil, le proxy réseau et le lanceur interne d'une exécution sandboxée. */
 async function prepare(file: string, cwd: string, ctx: SandboxCtx) {
   const profileFor = PROVIDER_PROFILES[ctx.connectorId] ?? { allow: [], credentialPaths: [] };
-  const binDir = dirname(realpathSync(file));
+  const real = realpathSync(file);
+  const binDir = dirname(real);
   const binds: Array<[string, string]> = [[binDir, binDir]];
-  // Interpréteur Node éventuel (CLI distribués comme scripts Node) : visible en lecture seule, sans le reste du HOME.
-  const nodeDir = dirname(process.execPath);
-  if (nodeDir !== binDir && !nodeDir.startsWith("/usr/") && !process.versions.electron) binds.push([nodeDir, nodeDir]);
+  // Paquet npm du CLI (ses dépendances et binaires natifs sont à côté du script) : visible en lecture seule.
+  const nm = real.lastIndexOf("/node_modules/");
+  if (nm > 0) binds.push([real.slice(0, nm + 13), real.slice(0, nm + 13)]);
+  for (const p of profileFor.runtimePaths ?? []) {
+    const abs = join(ctx.home, p);
+    if (existsSync(abs)) binds.push([abs, abs]);
+  }
+  // CLI écrit en Node : le Node de l'utilisateur (et non celui du système, souvent trop ancien) en tête du PATH.
+  let nodeBinDir: string | undefined;
+  if (/\bnode\b/.test(shebang(real))) {
+    const node = onPath("node", ctx.pathEnv);
+    if (node && !node.startsWith("/usr/")) {
+      nodeBinDir = dirname(node);
+      binds.push([nodeBinDir, nodeBinDir]);
+    }
+  }
 
   const allow = [...new Set([...profileFor.allow, ...ctx.extraAllow])];
   const useNetwork = allow.length > 0 && sandboxNetworkAvailable();
@@ -96,7 +187,7 @@ async function prepare(file: string, cwd: string, ctx: SandboxCtx) {
     protectEnvFiles: ctx.protectEnvFiles,
     network: proxy ? { mode: "proxy", allow } : { mode: "none" },
     env: {
-      PATH: `${binDir}:/usr/local/bin:/usr/bin:/bin`,
+      PATH: `${nodeBinDir ? `${nodeBinDir}:` : ""}${binDir}:/usr/local/bin:/usr/bin:/bin`,
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
       ...profileFor.env,
@@ -133,7 +224,11 @@ export async function runInSandbox(o: RunOptions, ctx: SandboxCtx): Promise<RunR
       ctx.caps,
       prepared.proxy ? { egressSocketPath: prepared.proxy.socketPath } : {},
     );
-    return await run({ ...o, file: "/bin/sh", args: ["-c", prepared.inner, "nexus-launcher", o.file, ...o.args] });
+    return await run({
+      ...o,
+      file: "/bin/sh",
+      args: ["-c", prepared.inner, "nexus-launcher", realpathSync(o.file), ...o.args],
+    });
   } catch (e) {
     return fail(`sandbox_error:${(e as Error).message}`.slice(0, 200));
   } finally {
@@ -165,7 +260,7 @@ export async function prepareInteractiveSandbox(
     const script = [
       "#!/bin/sh",
       `exec 3<${shq(seccomp)}`,
-      `exec ${[...inv.argv, "/bin/sh", "-c", prepared.inner, "nexus-launcher", file, ...args].map(shq).join(" ")}`,
+      `exec ${[...inv.argv, "/bin/sh", "-c", prepared.inner, "nexus-launcher", realpathSync(file), ...args].map(shq).join(" ")}`,
       "",
     ].join("\n");
     const launcher = join(dir, "launch.sh");

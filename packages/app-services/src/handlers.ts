@@ -19,6 +19,7 @@ import { ProjectFiles } from "./files.ts";
 import type { AppServices } from "./services.ts";
 import { createWorkspaceHandlers } from "./workspace-handlers.ts";
 import { createDeployHandlers } from "./deploy-handlers.ts";
+import { localizeMessage } from "./messages.ts";
 
 export type AppHandlers = {
   [C in IpcChannel]?: (request: IpcRequest<C>) => Promise<IpcResponse<C>> | IpcResponse<C>;
@@ -42,6 +43,14 @@ async function guard<T>(fn: () => Promise<T> | T): Promise<T> {
     // Erreurs des brokers distants : messages déjà bornés et expurgés par leurs packages.
     if (isGitHubError(e)) throw new ExposedError("policy_denied", `GitHub : ${e.message}`);
     if (isVercelError(e)) throw new ExposedError("policy_denied", `Vercel : ${e.message}`);
+    // Erreurs système courantes (fichier supprimé hors de Nexus, droits…) : message clair au lieu d'une erreur interne.
+    const code = (e as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") throw new ExposedError("not_found", "Élément introuvable");
+    if (code === "EACCES" || code === "EPERM") throw new ExposedError("policy_denied", "Accès refusé par le système");
+    if (code === "EISDIR") throw new ExposedError("invalid_request", "Pas un fichier");
+    if (code === "ENOTDIR") throw new ExposedError("invalid_request", "Pas un dossier");
+    if (code === "EEXIST" || code === "ENOTEMPTY") throw new ExposedError("conflict", "Un élément porte déjà ce nom");
+    if (code === "ENOSPC") throw new ExposedError("unavailable", "Disque plein");
     throw e;
   }
 }
@@ -81,7 +90,7 @@ export function createAppHandlers(
     routing: p.routing.map((r) => ({ taskKey: r.taskKey, agentId: r.agentId, reasons: r.reasons })),
   });
 
-  return {
+  const handlers: AppHandlers = {
     ...createWorkspaceHandlers(svc, (code, message) => new ExposedError(code, message), guard),
     ...createDeployHandlers(svc, (code, message) => new ExposedError(code, message), guard),
     "app.info": () => ({ ...appInfo, contractsVersion: CONTRACTS_VERSION }),
@@ -498,4 +507,20 @@ export function createAppHandlers(
         };
       }),
   };
+  // Messages d'erreur dans la langue choisie par l'utilisateur (les services écrivent en français).
+  const localized = Object.fromEntries(
+    Object.entries(handlers).map(([channel, fn]) => [
+      channel,
+      async (req: unknown) => {
+        try {
+          return await (fn as (r: unknown) => unknown)(req);
+        } catch (e) {
+          if (e instanceof ExposedError)
+            throw new ExposedError(e.code, localizeMessage(e.message, svc.settings.get().language));
+          throw e;
+        }
+      },
+    ]),
+  );
+  return localized as AppHandlers;
 }
