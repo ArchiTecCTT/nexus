@@ -81,26 +81,12 @@ export function createCodexNormalizer(): OutputNormalizer & { stats(): { malform
   };
 }
 
-/** Serveurs MCP de Nexus pour Codex : surcharges de configuration `-c mcp_servers.<nom>.*` (valeurs TOML). */
-export function codexMcpArgs(servers: AgentTaskRequest["mcpServers"]): string[] {
-  const out: string[] = [];
-  for (const s of servers ?? []) {
-    const env = Object.entries(s.env)
-      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-      .join(", ");
-    out.push(
-      "-c",
-      `mcp_servers.${s.name}.command=${JSON.stringify(s.command)}`,
-      "-c",
-      `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`,
-      "-c",
-      `mcp_servers.${s.name}.env={${env}}`,
-      // Outils de l'équipe pré-approuvés : en exécution non interactive, personne ne peut les approuver.
-      "-c",
-      `mcp_servers.${s.name}.default_tools_approval_mode="approve"`,
-    );
-  }
-  return out;
+/**
+ * Codex ne reçoit pas de serveur MCP tant qu'une intégration réelle, sans configuration secrète dans argv, n'est pas
+ * vérifiée. La configuration via `-c` exposait les jetons de capacité dans la table des processus.
+ */
+export function codexMcpArgs(_servers: AgentTaskRequest["mcpServers"]): string[] {
+  return [];
 }
 
 /** Options de bac à sable de Codex : complément de défense, jamais substitut à l'isolation OS. */

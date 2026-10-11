@@ -24,6 +24,8 @@ export const OrchestraFeedEntry = z.strictObject({
   to: z.string().max(120).optional(),
   /** Verdict d'une revue du chef (entrées `review`). */
   verdict: z.enum(["approved", "changes"]).optional(),
+  /** Entrée `assign` : la tâche a été réattribuée après l'échec d'un agent. */
+  reassigned: z.boolean().optional(),
 });
 export type OrchestraFeedEntry = z.infer<typeof OrchestraFeedEntry>;
 

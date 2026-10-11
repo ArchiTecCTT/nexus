@@ -23,7 +23,8 @@ if(p.includes('Découpe la mission')){
   console.log(JSON.stringify({schemaVersion:1,summary:'API puis interface',tasks:[t('api','API',['api'],[]),t('ui','Interface',['ui'],['api'])]}));
 } else if(p.includes('Relis le travail')){
   const isApi=p.includes('Tâche (Fake Work) : API');
-  if(isApi && !p.includes('v2')) console.log(JSON.stringify({verdict:'changes',feedback:'Passe la version à v2'}));
+  if(p.includes('Revue invalide')) console.log('réponse non structurée');
+  else if(isApi && !p.includes('v2')) console.log(JSON.stringify({verdict:'changes',feedback:'Passe la version à v2'}));
   else console.log(JSON.stringify({verdict:'approve',feedback:'OK'}));
 } else if(p.includes('Rédige pour l')){ console.log('Synthèse : API et interface livrées.'); }
 else console.log('?');
@@ -362,4 +363,22 @@ test("Orchestre : agent défaillant → raison affichée, tâches réattribuées
     ),
     "raison et réattribution dans le fil",
   );
+});
+
+test("Orchestre : une revue invalide échoue la tâche, sans approbation implicite", async (t) => {
+  const { repo, call } = await setup(t);
+  const p = await call("projects.open", { rootPath: repo });
+  const { missionId } = await call("orchestra.start", {
+    projectId: p.projectId,
+    goal: "Revue invalide",
+    leadConnectorId: "fake-lead",
+    memberConnectorIds: ["fake-work"],
+    mode: "supervised",
+    autonomy: "full",
+  });
+  await until(async () => ["done", "failed"].includes((await call("orchestra.get", { missionId })).phase), 60_000);
+  const d = await call("orchestra.get", { missionId });
+  assert.equal(d.phase, "failed");
+  assert.ok(d.tasks.some((task) => task.status === "failed"));
+  assert.ok(!d.feed.some((entry) => entry.kind === "review" && entry.verdict === "approved"));
 });

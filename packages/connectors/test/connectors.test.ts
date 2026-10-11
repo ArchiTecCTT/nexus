@@ -21,6 +21,7 @@ import {
   ConnectorRegistry,
   EventSequencer,
   GENERIC_INVOCATIONS,
+  claudeMcpConfig,
   claudeMcpArgs,
   codexMcpArgs,
   mcpConfigFor,
@@ -367,22 +368,27 @@ test("CLI générique : invocation non interactive (Hermes chat -Q -q), --yolo s
   ]);
 });
 
-test("bus de l'équipe transmis à chaque CLI : Claude (--mcp-config), Codex (-c pré-approuvé), Gemini/Qwen/OpenCode (fichier temporaire)", () => {
+test("bus de l'équipe : Claude reçoit une configuration temporaire, sans jeton dans argv ; Codex est désactivé jusqu'à une intégration sûre", () => {
   const s = [{ name: "nexus", command: "/usr/bin/node", args: ["/x/mcp.cjs"], env: { NEXUS_BUS_TOKEN: "t0k" } }];
-  const cl = claudeMcpArgs(s, "manual");
+  const mcp = claudeMcpConfig(s, "manual")!;
+  const cl = mcp.args;
   assert.equal(cl[0], "--mcp-config");
-  assert.deepEqual(JSON.parse(cl[1]!).mcpServers.nexus, {
+  assert.ok(!cl.join(" ").includes("t0k"), "le jeton ne figure jamais dans argv");
+  assert.deepEqual(JSON.parse(readFileSync(cl[1]!, "utf8")).mcpServers.nexus, {
     command: "/usr/bin/node",
     args: ["/x/mcp.cjs"],
     env: { NEXUS_BUS_TOKEN: "t0k" },
   });
   assert.deepEqual(cl.slice(2), ["--allowedTools", "mcp__nexus"], "outils autorisés en mode avec validation");
-  assert.deepEqual(claudeMcpArgs(s, "autonomous").length, 2);
+  mcp.cleanup();
+  assert.throws(() => readFileSync(cl[1]!), "configuration temporaire supprimée");
+  assert.deepEqual(claudeMcpConfig(s, "autonomous")!.args.length, 2);
   assert.deepEqual(claudeMcpArgs(undefined, "manual"), []);
-  const cx = codexMcpArgs(s);
-  assert.ok(cx.includes(`mcp_servers.nexus.command="/usr/bin/node"`));
-  assert.ok(cx.includes(`mcp_servers.nexus.env={NEXUS_BUS_TOKEN="t0k"}`));
-  assert.ok(cx.includes(`mcp_servers.nexus.default_tools_approval_mode="approve"`));
+  assert.deepEqual(
+    codexMcpArgs(s),
+    [],
+    "Codex ne reçoit pas le jeton tant qu'un transport sans argv n'est pas vérifié",
+  );
   for (const [id, env] of [
     ["gemini-cli", "GEMINI_CLI_SYSTEM_SETTINGS_PATH"],
     ["qwen-cli", "QWEN_CODE_SYSTEM_SETTINGS_PATH"],

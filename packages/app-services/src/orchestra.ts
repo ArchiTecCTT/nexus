@@ -43,7 +43,7 @@ const STRENGTHS: Record<string, string> = {
 };
 const MAX_REVIEW_ROUNDS = 2;
 /** CLI qui reçoivent le serveur MCP de l'équipe (messagerie en direct) ; les autres ont la transmission par consigne. */
-const BUS_CONNECTORS = new Set(["claude-cli", "codex-cli", "gemini-cli", "qwen-cli", "opencode-cli"]);
+const BUS_CONNECTORS = new Set(["claude-cli", "gemini-cli", "qwen-cli", "opencode-cli"]);
 
 type TeamMessage = { at: string; from: string; to: string; text: string };
 
@@ -720,6 +720,7 @@ export class Orchestra {
       await core.missions.transition(t.taskId, "ready", OWNER, { reason: "reassigned" });
       this.#feed(missionId, {
         kind: "assign",
+        reassigned: true,
         text: `« ${t.title} » a échoué avec ${who} (${why}) : confiée à ${next.role}`,
         taskId: t.taskId,
         from: "Chef d'orchestre",
@@ -790,16 +791,16 @@ export class Orchestra {
         "n'est pas rempli ou s'il y a un défaut réel ; feedback = consignes précises de correction (ou court commentaire).",
       ].join("\n"),
       signal,
-    ).catch((e: unknown) => `{"verdict":"approve","feedback":"Revue indisponible : ${(e as Error).message}"}`);
+    ).catch(() => `{"verdict":"changes","feedback":"Revue indisponible : une validation explicite est requise."}`);
     const m = /\{[\s\S]*"verdict"[\s\S]*\}/.exec(answer);
-    let verdict: "approve" | "changes" = "approve";
+    let verdict: "approve" | "changes" = "changes";
     let feedback = "";
     try {
       const j = JSON.parse(m?.[0] ?? "{}") as { verdict?: string; feedback?: string };
-      verdict = j.verdict === "changes" ? "changes" : "approve";
+      verdict = j.verdict === "approve" || j.verdict === "changes" ? j.verdict : "changes";
       feedback = String(j.feedback ?? "").slice(0, 4000);
     } catch {
-      feedback = "Revue illisible : travail accepté par défaut.";
+      feedback = "Revue illisible : une validation explicite est requise.";
     }
     const rounds = meta.reviewRounds[taskId] ?? 0;
     if (verdict === "changes" && rounds < MAX_REVIEW_ROUNDS) {
@@ -829,14 +830,21 @@ export class Orchestra {
       }
       return;
     }
+    if (verdict === "changes") {
+      await core.missions.transition(taskId, "failed", OWNER, { failureCode: "review_changes_exhausted" });
+      this.#feed(missionId, {
+        kind: "error",
+        text: `Revue de « ${task.title} » non validée après ${rounds} tour(s) de corrections.`,
+        taskId,
+        from: "Nexus",
+      });
+      return;
+    }
     await core.missions.transition(taskId, "completed", OWNER, { reason: "lead_review_approved" });
     this.#feed(missionId, {
       kind: "review",
       verdict: "approved",
-      text:
-        verdict === "changes"
-          ? `Accepté après ${rounds} tour(s) de corrections. ${feedback}`
-          : `Accepté. ${feedback}`.trim(),
+      text: `Accepté. ${feedback}`.trim(),
       taskId,
       from: "Chef d'orchestre",
       to: role,

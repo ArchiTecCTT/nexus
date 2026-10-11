@@ -1,6 +1,9 @@
 // Connecteur Claude Code (FR-004) — formats observés avec Claude Code 2.1.296 (ADR-001 §3.1).
 // `--print --output-format stream-json --verbose`, prompt sur stdin, identifiant de session imposé (`--session-id`)
 // pour la reprise native (`--resume`). Le formatage interne du CLI peut évoluer : tout type inconnu est ignoré et compté.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   AgentConnector,
   AgentEvent,
@@ -161,20 +164,31 @@ export function claudePermissionArgs(mode: PermissionMode): string[] {
   }
 }
 
-/**
- * Serveurs MCP de Nexus (messagerie de l'équipe) : configuration JSON en ligne (le mode MCP strict garantit que seuls
- * ceux-ci sont chargés) ; en mode avec validation, leurs outils sont explicitement autorisés.
- */
-export function claudeMcpArgs(servers: AgentTaskRequest["mcpServers"], mode: PermissionMode): string[] {
-  if (!servers?.length) return [];
+/** Configuration MCP temporaire, privée et supprimée à la fin de la tâche. */
+export function claudeMcpConfig(
+  servers: AgentTaskRequest["mcpServers"],
+  mode: PermissionMode,
+): { args: string[]; cleanup: () => void } | undefined {
+  if (!servers?.length) return undefined;
   const mcpServers = Object.fromEntries(servers.map((s) => [s.name, { command: s.command, args: s.args, env: s.env }]));
-  return [
-    "--mcp-config",
-    JSON.stringify({ mcpServers }),
-    ...(mode === "manual" || mode === "notify" || mode === "read-only"
-      ? ["--allowedTools", ...servers.map((s) => `mcp__${s.name}`)]
-      : []),
-  ];
+  const dir = mkdtempSync(join(tmpdir(), "nexus-mcp-"));
+  const file = join(dir, "claude-mcp.json");
+  writeFileSync(file, JSON.stringify({ mcpServers }), { mode: 0o600 });
+  return {
+    args: [
+      "--mcp-config",
+      file,
+      ...(mode === "manual" || mode === "notify" || mode === "read-only"
+        ? ["--allowedTools", ...servers.map((s) => `mcp__${s.name}`)]
+        : []),
+    ],
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/** Sans propriétaire de cycle de vie, cette ancienne API refuse plutôt que de mettre un jeton dans argv. */
+export function claudeMcpArgs(_servers: AgentTaskRequest["mcpServers"], _mode: PermissionMode): string[] {
+  return [];
 }
 
 export type ClaudeConnectorOptions = {
@@ -218,7 +232,8 @@ export class ClaudeCliConnector implements AgentConnector {
     const mode = this.#opts.resolvePermissionMode(req.permissionsPolicyId);
     if (!this.#binary)
       return refuse(req.taskId, "binary_not_found", "Claude Code n'a pas été détecté (lancer la sonde)");
-    return runCliTask({
+    const mcp = claudeMcpConfig(req.mcpServers, mode);
+    const task = runCliTask({
       taskId: req.taskId,
       file: this.#binary,
       args: [
@@ -228,7 +243,7 @@ export class ClaudeCliConnector implements AgentConnector {
         "--verbose",
         ...sessionArgs,
         ...claudePermissionArgs(mode),
-        ...claudeMcpArgs(req.mcpServers, mode),
+        ...(mcp?.args ?? []),
       ],
       stdin: req.prompt,
       cwd: req.workspacePath,
@@ -238,6 +253,14 @@ export class ClaudeCliConnector implements AgentConnector {
       normalizer: createClaudeNormalizer(),
       ...(this.#opts.runner && { runner: this.#opts.runner }),
     });
+    if (!mcp) return task;
+    return (async function* () {
+      try {
+        yield* task;
+      } finally {
+        mcp.cleanup();
+      }
+    })();
   }
 }
 

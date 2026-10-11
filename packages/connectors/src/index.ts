@@ -6,6 +6,7 @@ export { EventSequencer, runCliTask, type CliTask, type EventBody, type OutputNo
 export {
   CLAUDE_MANIFEST,
   ClaudeCliConnector,
+  claudeMcpConfig,
   claudeMcpArgs,
   claudePermissionArgs,
   createClaudeNormalizer,
