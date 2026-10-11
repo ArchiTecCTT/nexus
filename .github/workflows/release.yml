@@ -25,11 +25,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.10.0
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      # Version de pnpm lue dans package.json (« packageManager »).
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24.18.0"
           cache: pnpm

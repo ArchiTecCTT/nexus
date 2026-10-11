@@ -11,16 +11,23 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.10.0
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      # Version de pnpm lue dans package.json (« packageManager ») : une seule source de vérité.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24.18.0"
           cache: pnpm
+      # Ubuntu 24.04 interdit par défaut les user namespaces non privilégiés (AppArmor) : Nexus en a besoin pour
+      # isoler les agents (PID namespace) et pour la sandbox (bwrap). On lève la restriction sur le runner jetable,
+      # ce qui permet d'exécuter VRAIMENT les tests d'isolation au lieu de les ignorer.
+      - name: User namespaces et outils de la sandbox
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
       - name: Installation reproductible (seuls les scripts de pnpm-workspace.yaml > allowBuilds s'exécutent)
         run: pnpm install --frozen-lockfile
       - name: Lint et format
@@ -28,9 +35,27 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
       - name: Tests
-        # Les runners GitHub restreignent les user namespaces non privilégiés (AppArmor) : les tests bwrap y sont
-        # ignorés explicitement. Ils restent obligatoires sur un poste de développement Ubuntu (ADR-001).
-        env:
-          NEXUS_T001_ALLOW_NO_BWRAP: "1"
-          NEXUS_ALLOW_NO_USERNS: "1"
         run: pnpm test
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.18.0"
+          cache: pnpm
+      - name: User namespaces (sandbox Chromium d'Electron) et serveur X virtuel
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run generate
+      - name: Application empaquetée puis E2E (sécurité + interface)
+        run: |
+          cd apps/desktop
+          npx electron-forge package
+          xvfb-run -a node --test --test-concurrency=1 e2e/security.e2e.ts e2e/ui.e2e.ts
