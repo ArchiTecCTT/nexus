@@ -1,0 +1,7 @@
+: Fixture construite d apres la documentation publique Gemini API (streamGenerateContent?alt=sse).
+: NON verifiee contre l API reelle. Fins de ligne CRLF volontaires.
+
+data: {"candidates": [{"content": {"parts": [{"text": "Bonjour"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 12,"totalTokenCount": 12},"modelVersion": "gemini-fixture","responseId": "resp-fx4"}
+
+data: {"candidates": [{"content": {"parts": [{"text": ", monde é✓"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 12,"candidatesTokenCount": 5,"totalTokenCount": 17},"modelVersion": "gemini-fixture","responseId": "resp-fx4"}
+

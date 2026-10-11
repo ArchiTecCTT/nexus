@@ -1,0 +1,19 @@
+{
+  "name": "@nexus/github",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Broker GitHub (T-018) : push approuvé sans force, création de PR via la CLI officielle gh.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@nexus/contracts": "workspace:*",
+    "@nexus/core": "workspace:*",
+    "@nexus/git": "workspace:*",
+    "@nexus/process-supervisor": "workspace:*"
+  }
+}

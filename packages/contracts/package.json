@@ -1,0 +1,16 @@
+{
+  "name": "@nexus/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Schémas Zod versionnés partagés par tous les modules Nexus AI.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  }
+}

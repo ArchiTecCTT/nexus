@@ -1,0 +1,17 @@
+{
+  "name": "@nexus/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Registre des connecteurs, sondes des CLI et adaptateurs CLI (Claude, Codex, générique) normalisés en AgentEvent.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@nexus/contracts": "workspace:*",
+    "@nexus/process-supervisor": "workspace:*"
+  }
+}

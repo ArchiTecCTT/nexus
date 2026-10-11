@@ -1,0 +1,25 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Electron Forge copie les modules d'exécution depuis node_modules à la racine : arborescence « à plat » requise.
+nodeLinker: hoisted
+
+# Scripts d'installation : refusés par défaut, autorisés seulement pour les modules natifs nécessaires.
+allowBuilds:
+  node-pty: true
+  electron: true
+  '@prisma/engines': false
+  prisma: false
+  esbuild: false
+  electron-winstaller: false
+
+minimumReleaseAgeExclude:
+  - dockview-core@8.5.1
+  - dockview@8.5.1
+
+# Seuls les binaires de la plateforme courante sont téléchargés (sans cela, pnpm récupère ceux de toutes les plateformes).
+supportedArchitectures:
+  os: [current]
+  cpu: [current]
+  libc: [current]

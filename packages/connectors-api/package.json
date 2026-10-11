@@ -1,0 +1,17 @@
+{
+  "name": "@nexus/connectors-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Adaptateurs API (OpenAI, Anthropic, Google AI Studio, OpenRouter) en fetch natif, flux SSE normalisés en AgentEvent.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@nexus/connectors": "workspace:*",
+    "@nexus/contracts": "workspace:*"
+  }
+}
