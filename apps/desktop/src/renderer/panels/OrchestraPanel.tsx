@@ -1,5 +1,5 @@
 // Vue Orchestre : une équipe d'agents IA pilotée par un chef d'orchestre.
-// En-tête (objectif, phase, durée, actions), équipe en direct, graphe des tâches (@xyflow/react), fil de l'orchestre
+// En-tête (objectif, phase, durée, actions), équipe en direct, liste des tâches, fil de l'orchestre
 // façon conversation d'équipe (plan, attributions, transmissions, messages entre agents, revues, synthèse),
 // message au chef, validation du plan et onglet Changements (fichiers modifiés, intégration au projet).
 import type { OrchestraDetail, OrchestraFeedEntry, OrchestraPhase } from "@nexus/contracts";
@@ -68,6 +68,17 @@ function duration(fromIso: string, to: number): string {
 const reviewAccepted = (text: string) =>
   !/correction|changes requested|à corriger|refus|reject|rework/i.test(text) &&
   /accept|approuv|approved|ok\b|valid/i.test(text);
+
+/** Le rôle répète-t-il simplement le nom de l'agent (« Codex CLI » pour codex-cli) ? */
+const sameName = (role: string, connectorId: string) => {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const r = norm(role);
+  return !r || r === norm(agentName(connectorId)) || r === norm(connectorId) || norm(agentName(connectorId)).startsWith(r);
+};
+
+/** Réattribution d'une tâche après l'échec d'un agent (texte localisé par le main). */
+export const isReassign = (e: OrchestraFeedEntry) => e.kind === "assign" && /reassign|réattribu|réaffect/i.test(e.text);
+const reasonOf = (text: string) => text.match(/\(([^)]+)\)/)?.[1];
 
 // --- Tâches (liste simple) ------------------------------------------------------------------------------------------
 
