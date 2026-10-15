@@ -1,94 +1,111 @@
 # Nexus AI
 
-> **The orchestra for your AI coding agents.** Describe a goal: Claude, Codex, Gemini, OpenCode, Qwen and Hermes take it
-> on **together** — they split the work, **talk to each other while they code**, review each other, and hand you an
-> integrated result. In a real development environment, running locally, with a real sandbox.
+> **The orchestra for AI coding agents.** Give Nexus a development goal and let compatible agents plan, divide, discuss, review, and integrate the work as one team - while you remain in control.
 
-**Status: preview 0.1.0 — Linux first** (Windows and macOS builds are produced, without the verified sandbox).
-Details: [`.coordination/STATUS.md`](.coordination/STATUS.md) · [release notes](docs/RELEASE_NOTES.md).
+Nexus AI is a local-first desktop workspace for coordinating AI coding agents such as Claude Code, Codex, Gemini, OpenCode, Qwen, and Hermes. It is designed for real development repositories, not isolated chat demos: agents can work in parallel, exchange structured context, hand work off to one another, and submit their output for review.
 
-## Download
+## Preview status
 
-Grab the latest build from the [**Releases**](https://github.com/Dayifour/nexus/releases) page:
+Nexus AI is currently a **source-first 0.1.0 preview**. The primary verified platform is Linux. The repository includes release automation for Linux, Windows, and macOS, but a public 0.1.0 release has not yet been published.
 
-| System | File | Install |
-|---|---|---|
-| Ubuntu / Debian | `nexus-ai_<version>_amd64.deb` | `sudo apt install ./nexus-ai_<version>_amd64.deb` |
-| Fedora / openSUSE | `nexus-ai-<version>.x86_64.rpm` | `sudo dnf install ./nexus-ai-<version>.x86_64.rpm` |
-| Any Linux | `Nexus AI-linux-x64-<version>.zip` | unzip, then run `nexus-ai` |
-| Windows | `Nexus AI-<version> Setup.exe` (or the `.zip`) | run the installer |
-| macOS | `Nexus AI-darwin-arm64-<version>.zip` | unzip, then right-click → Open (unsigned build) |
+Before using Nexus AI on a valuable repository, read the [security policy](SECURITY.md), [threat model](docs/threat-model/README.md), and [release notes](docs/RELEASE_NOTES.md). Preview software may contain incomplete integrations and platform-specific limitations.
 
-`SHA256SUMS.txt` lists the checksum of every file. Nexus drives the agent CLIs you already use: install and sign in to at
-least one of them (`claude`, `codex`, `gemini`, `qwen`, `opencode`, `hermes`) — Nexus detects them automatically.
+## Why Nexus AI
 
-## What makes Nexus different
+Most multi-agent tools run agents next to each other. Nexus is built to make them collaborate:
 
-Other tools run several agents **side by side**. Nexus makes them **work together**:
+- **An autonomous conductor** turns a goal into a dependency graph, assigns work according to agent capabilities, and reviews completed tasks against the acceptance criteria.
+- **A mixed-vendor team** can run independent work in parallel from a shared, isolated project copy.
+- **Agent-to-agent messaging** gives agents a constrained team bus for status, hand-offs, questions, and warnings while they work.
+- **Reviewed hand-offs** pass relevant reports and changes to dependent tasks instead of treating each agent run as an isolated chat.
+- **Failure-aware orchestration** surfaces unavailable CLIs and execution errors, then enables reassignment rather than hiding the failure.
+- **Human control at every boundary** supports plan approval, direct conductor messaging, immediate stopping, and an explicit merge decision.
 
-- **An autonomous conductor.** One agent (e.g. Claude) breaks the goal into tasks, assigns each task to the agent best
-  suited for it (architecture, tests, front-end, large context…) and orders them as a dependency graph.
-- **Agents from different vendors on one team.** Independent tasks run in parallel in a shared, isolated copy of the
-  project.
-- **Real agent-to-agent messaging.** Every agent gets the `nexus` MCP tools — `team_status`, `send_message`,
-  `read_messages`, `ask_lead`. Codex can ask the conductor for an exact API signature, or warn Claude about an interface
-  contract, while it works. Verified with real Claude Code, Codex CLI and OpenCode runs.
-- **Hand-offs.** Each agent receives the report and the changes of the tasks it depends on.
-- **Reviews by the conductor.** Every result is reviewed (diff + acceptance criteria): accepted, or sent back with precise
-  changes.
-- **Resilient.** If an agent fails (not signed in, CLI error), the conductor shows why and reassigns its tasks to another
-  team member.
-- **You stay in control.** Full autonomy or plan approval; message the conductor at any time; stop instantly; merge the
-  team's branch into your project in one confirmed click.
+The desktop workspace also includes a project explorer, Monaco editor, terminals, Git workflows, pull-request support, deployment planning, local event storage, secret handling through the OS keychain, and French/English UI and logs.
 
-## Everything else you expect from a coding workspace
+## Platform support and safety
 
-- **Three simple modes**: Autonomous (directly in the project), Sandboxed (bubblewrap + seccomp + network proxy limited to
-  the agent's provider), Reviewed (isolated copy, you accept the changes).
-- **Agents in their real terminal** (interactive TUI, live status, desktop notifications) or as a conversation; sessions
-  are kept per project, can be resumed, searched and deleted.
-- **A VS Code-like IDE**: file explorer, Monaco editor, real terminals, command palette, full keyboard shortcuts, Git,
-  pull requests.
-- **Deployment planning**: the AI proposes hosting architectures (Vercel, Render, Railway, Hostinger VPS, MongoDB
-  Atlas…), you pick one, Nexus deploys it step by step with confirmation.
-- **Local-first and secure**: SQLite event log, OS keychain for secrets, validated IPC, native confirmation dialogs for
-  sensitive actions. See the [threat model](docs/threat-model/README.md).
-- **French and English** interface, messages and logs.
+| Platform | Application builds | Verified agent sandbox |
+| --- | --- | --- |
+| Linux | Primary development and verification platform | Yes: Bubblewrap, seccomp, cgroups v2, and restricted egress proxy |
+| Windows | Release automation is present | No; `sandbox-auto` is refused |
+| macOS | Release automation is present | No; `sandbox-auto` is refused |
 
-## Architecture
+Sandbox guarantees are deliberately conservative. Nexus does not advertise a sandbox as available until its isolation tests pass on that platform. See [SECURITY.md](SECURITY.md) and the [threat model](docs/threat-model/README.md) for residual risks and operational guidance.
 
-```text
-React renderer (untrusted UI)
-    ⇅ typed IPC, validated in preload and main (Zod)
-Electron main
-    ├── Orchestra: conductor, parallel task graph, reviews, MCP team bus between agents
-    ├── Event store (SQLite + Prisma), projections, crash recovery
-    ├── Connectors: CLI agents (stream-json / PTY) and API models (HTTPS)
-    ├── Process supervisor (PID namespace) and Linux sandbox (bwrap, seccomp, cgroups, egress proxy)
-    ├── Git worktrees, GitHub, deployment planner
-    └── Secret vault (safeStorage), voice, usage
-```
+## Get started from source
 
-## Develop
+### Requirements
 
-Requirements: Node 24.18, pnpm 11, Linux (bubblewrap and unprivileged user namespaces for the sandbox tests).
+- Node.js `24.18.x`
+- pnpm `11.10.x`
+- Git
+- Linux is recommended for the verified development path. Sandbox tests additionally require Bubblewrap (`bwrap`) and unprivileged user namespaces.
+- At least one supported agent CLI installed and authenticated locally (`claude`, `codex`, `gemini`, `qwen`, `opencode`, or `hermes`). Nexus detects available CLIs; it never supplies provider accounts or credentials.
+
+### Run locally
 
 ```bash
-pnpm install --frozen-lockfile && pnpm run generate
-pnpm run check     # lint, typecheck, tests
-pnpm start         # run the app in development
-pnpm --filter @nexus/desktop run make   # build packages into apps/desktop/out/make
+git clone https://github.com/Dayifour/nexus.git
+cd nexus
+pnpm install --frozen-lockfile
+pnpm run generate
+pnpm run check
+pnpm start
 ```
 
-Reproducible Linux build in Docker (no local toolchain needed):
+Build distributable packages locally with:
+
+```bash
+pnpm --filter @nexus/desktop run make
+```
+
+For a reproducible Linux build without a local Node.js toolchain:
 
 ```bash
 docker build -f Dockerfile.release --target export -o dist .
 ```
 
-Publishing a release: see [`docs/RELEASING.md`](docs/RELEASING.md). Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) ·
-security: [`SECURITY.md`](SECURITY.md).
+The release workflow produces Linux, Windows, and macOS artefacts when a maintainer pushes a `vX.Y.Z` tag. Publishing instructions are in [docs/RELEASING.md](docs/RELEASING.md).
 
-## License
+## Architecture
 
-Apache-2.0 — Copyright 2026 Dayifour. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+```text
+React renderer (untrusted UI)
+    <-> typed IPC, validated in preload and main (Zod)
+Electron main
+    |- Orchestra: conductor, parallel task graph, reviews, MCP team bus
+    |- Event store: SQLite + Prisma, projections, crash recovery
+    |- Connectors: CLI agents and HTTPS API models
+    |- Process supervisor and Linux sandbox
+    |- Git worktrees, GitHub, and deployment planner
+    `- Secret vault, voice, and usage services
+```
+
+The workspace is organised as follows:
+
+```text
+apps/desktop/          Electron desktop application
+packages/contracts/    Shared schemas and public contracts
+packages/*/            Domain, agent, sandbox, storage, Git, and integration packages
+docs/                  Architecture, ADRs, threat model, test evidence, and release notes
+tests/                 Cross-package security and verification tests
+```
+
+## Contributing
+
+We want contributions from developers, security researchers, documentation writers, and AI-tooling enthusiasts.
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verified commands, engineering rules, and pull-request expectations.
+- Use GitHub issues for reproducible bugs, feature proposals, and documentation gaps.
+- Read [SECURITY.md](SECURITY.md) before reporting a vulnerability; do not disclose security issues in public tickets.
+
+The CI workflow validates linting, type checks, unit/integration tests, and Electron end-to-end tests on Ubuntu. Contributions that alter security boundaries, shared contracts, or architecture may require an ADR and additional evidence.
+
+## Roadmap and releases
+
+The immediate goal is a trustworthy public preview: repeatable verification, transparent platform support, tested integrations, and a contributor-friendly project foundation. Current capabilities, known limitations, and verification status are recorded in the [release notes](docs/RELEASE_NOTES.md) and [project status](.coordination/STATUS.md).
+
+## License and notices
+
+Nexus AI is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for project and third-party notices. Copyright 2026 Dayifour.
