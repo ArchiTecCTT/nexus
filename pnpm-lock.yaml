@@ -165,12 +165,6 @@ importers:
       '@nexus/deploy-planner':
         specifier: workspace:*
         version: link:../deploy-planner
-      '@nexus/deploy-vercel':
-        specifier: workspace:*
-        version: link:../deploy-vercel
-      '@nexus/diagrams':
-        specifier: workspace:*
-        version: link:../diagrams
       '@nexus/git':
         specifier: workspace:*
         version: link:../git
@@ -246,18 +240,6 @@ importers:
       zod:
         specifier: 4.6.5
         version: 4.6.5
-
-  packages/deploy-vercel:
-    dependencies:
-      '@nexus/contracts':
-        specifier: workspace:*
-        version: link:../contracts
-      '@nexus/core':
-        specifier: workspace:*
-        version: link:../core
-      '@nexus/process-supervisor':
-        specifier: workspace:*
-        version: link:../process-supervisor
 
   packages/diagrams: {}
 

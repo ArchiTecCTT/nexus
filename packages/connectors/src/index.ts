@@ -26,5 +26,6 @@ export {
   mcpConfigFor,
   plainTextNormalizer,
   stripAnsi,
+  supportsReadOnly,
   type GenericCliConfig,
 } from "./cli/generic.ts";

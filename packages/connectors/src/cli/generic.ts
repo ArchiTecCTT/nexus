@@ -17,8 +17,17 @@ export type GenericCliConfig = {
   promptVia: "stdin" | "last-arg";
   /** Option qui précède le prompt en argument (ex. `-q`, `-p`). */
   promptFlag?: string;
-  /** Arguments ajoutés dans les modes sans validation (autonome, sandbox) : ex. `--yolo`. */
+  /**
+   * Arguments d'approbation automatique (ex. `--yolo`) : donnés dans tous les modes qui écrivent. Personne ne peut
+   * répondre à une question en exécution non interactive ; en mode « validation » la barrière est le worktree isolé
+   * et la revue humaine du diff.
+   */
   freeArgs?: readonly string[];
+  /**
+   * Mode lecture seule de la CLI (ex. `--approval-mode plan`). Absent = la CLI n'en a pas : une demande en lecture
+   * seule est refusée (jamais simulée) et `readOnlySupported` est faux (pas de rôle de chef / relecteur).
+   */
+  readOnlyArgs?: readonly string[];
 };
 
 /**
@@ -27,15 +36,29 @@ export type GenericCliConfig = {
  */
 export const GENERIC_INVOCATIONS: Record<string, Omit<GenericCliConfig, "signature">> = {
   // Vérifié en réel (Hermes Agent 0.18) : fichier créé, code 0.
+  // Aucun mode lecture seule (Hermes 0.18 : seulement `--yolo` ou des questions interactives) : pas de rôle de chef.
   "hermes-cli": { args: ["chat", "-Q"], promptVia: "last-arg", promptFlag: "-q", freeArgs: ["--yolo"] },
-  // Vérifié en réel (OpenCode 1.19) : fichier créé, code 0.
-  "opencode-cli": { args: ["run"], promptVia: "last-arg" },
+  // Vérifié en réel (OpenCode 1.19) : fichier créé, code 0. Lecture seule : agent intégré `plan` (éditions refusées).
+  "opencode-cli": { args: ["run"], promptVia: "last-arg", readOnlyArgs: ["--agent", "plan"] },
   // Options vérifiées dans l'aide des versions installées (Gemini CLI 0.63, Qwen Code 0.25) ; exécution réelle
   // en attente de la connexion de l'utilisateur (sans connexion : code 41 pour Gemini, 1 pour Qwen).
   // `--skip-trust` : sans lui, Gemini ignore `--yolo` dans un dossier « non approuvé » et n'écrit rien (ouvrir le
   // projet dans Nexus et y lancer l'agent vaut approbation).
-  "gemini-cli": { args: ["--skip-trust"], promptVia: "last-arg", promptFlag: "--prompt", freeArgs: ["--yolo"] },
-  "qwen-cli": { args: [], promptVia: "last-arg", promptFlag: "--", freeArgs: ["--yolo"] },
+  // Lecture seule : `--approval-mode plan` (« read-only mode » dans l'aide de Gemini 0.63 et de Qwen Code 0.25).
+  "gemini-cli": {
+    args: ["--skip-trust"],
+    promptVia: "last-arg",
+    promptFlag: "--prompt",
+    freeArgs: ["--yolo"],
+    readOnlyArgs: ["--approval-mode", "plan"],
+  },
+  "qwen-cli": {
+    args: [],
+    promptVia: "last-arg",
+    promptFlag: "--",
+    freeArgs: ["--yolo"],
+    readOnlyArgs: ["--approval-mode", "plan"],
+  },
 };
 
 /** Normaliseur texte : chaque ligne devient un événement `output` ; en cas d'échec, les dernières lignes d'erreur
@@ -99,6 +122,11 @@ export class GenericCliConnector implements AgentConnector {
     };
   }
 
+  /** La CLI sait travailler en lecture seule (sinon : jamais de rôle de chef ni de relecteur). */
+  get readOnlySupported(): boolean {
+    return this.#cfg.readOnlyArgs !== undefined;
+  }
+
   async probe(): Promise<ProbeResult> {
     const r = await probeCli(this.#cfg.signature, this.#probe);
     if (r.path) this.#binary = r.path;
@@ -108,6 +136,9 @@ export class GenericCliConnector implements AgentConnector {
   start(req: AgentTaskRequest, signal: AbortSignal): AsyncIterable<AgentEvent> {
     if (!this.#binary)
       return refuse(req.taskId, "binary_not_found", `${this.manifest.displayName} n'a pas été détecté`);
+    const readOnly = req.permissionsPolicyId === "read-only";
+    if (readOnly && !this.#cfg.readOnlyArgs)
+      return refuse(req.taskId, "policy_denied", `${this.manifest.displayName} ne propose pas de mode lecture seule`);
     let started = false;
     const text = createPlainTextNormalizer();
     const normalizer: OutputNormalizer = {
@@ -138,7 +169,7 @@ export class GenericCliConnector implements AgentConnector {
       file: this.#binary,
       args: [
         ...this.#cfg.args,
-        ...(["autonomous", "sandbox-auto"].includes(req.permissionsPolicyId) ? (this.#cfg.freeArgs ?? []) : []),
+        ...(readOnly ? this.#cfg.readOnlyArgs! : (this.#cfg.freeArgs ?? [])),
         ...(this.#cfg.promptVia === "last-arg"
           ? [...(this.#cfg.promptFlag ? [this.#cfg.promptFlag] : []), req.prompt]
           : []),
@@ -199,4 +230,10 @@ export function mcpConfigFor(
   const file = join(dir, "settings.json");
   writeFileSync(file, JSON.stringify(content), { mode: 0o600 });
   return { env: { [envName]: file }, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** Un connecteur peut-il recevoir un rôle en lecture seule (chef, relecteur) ? Les CLI génériques sans mode lecture
+ * seule ne le peuvent pas ; Claude, Codex et les API respectent la politique `read-only`. */
+export function supportsReadOnly(connector: AgentConnector): boolean {
+  return !(connector instanceof GenericCliConnector) || connector.readOnlySupported;
 }

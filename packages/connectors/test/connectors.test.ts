@@ -16,11 +16,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentEvent, type AgentTaskRequest, type PermissionMode } from "@nexus/contracts";
 import {
+  AsyncQueue,
+  runCliTask,
   ClaudeCliConnector,
   CodexCliConnector,
   ConnectorRegistry,
   EventSequencer,
   GENERIC_INVOCATIONS,
+  supportsReadOnly,
   claudeMcpConfig,
   claudeMcpArgs,
   codexMcpArgs,
@@ -173,14 +176,17 @@ test("Claude : flux nominal normalisé, séquences croissantes, événements con
   const rec = JSON.parse(readFileSync(record, "utf8"));
   assert.equal(rec.stdin, req.prompt, "prompt transmis sur stdin");
   assert.ok(!rec.args.join(" ").includes("ce prompt"), "prompt jamais dans argv");
-  assert.deepEqual(rec.args.slice(0, 6), [
-    "--print",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--session-id",
+  assert.deepEqual(rec.args.slice(0, 5), ["--print", "--output-format", "stream-json", "--verbose", "--session-id"]);
+  // H7 : identifiant de session NEUF à chaque lancement (sinon « Session ID already in use » d'une tâche à l'autre).
+  assert.match(rec.args[5], /^[0-9a-f-]{36}$/);
+  assert.notEqual(
+    rec.args[5],
     req.sessionId,
-  ]);
+    "la session Nexus (projet, agent) n'est pas réutilisée comme session CLI",
+  );
+  await collect(connector.start(req, new AbortController().signal));
+  const again = JSON.parse(readFileSync(record, "utf8"));
+  assert.notEqual(again.args[5], rec.args[5], "deux lancements, deux sessions CLI distinctes");
 });
 
 test("Claude avec validation : --restricted, dontAsk, outils limités ; environnement réduit", async (t) => {
@@ -333,28 +339,30 @@ test(
   },
 );
 
-test("CLI générique : invocation non interactive (Hermes chat -Q -q), --yolo seulement sans validation", async (t) => {
+test("CLI générique : invocation non interactive, auto-approbation dans les modes qui écrivent, lecture seule réelle ou refusée", async (t) => {
   const dir = binDir(t, { fakecli: "fake-plain.mjs" });
   const seen: string[][] = [];
-  const c = new GenericCliConnector(
-    { signature: sig("hermes-cli", "fakecli"), ...GENERIC_INVOCATIONS["hermes-cli"]! },
-    {
-      probeContext: { pathEnv: `${join(dir, "bin")}:${NODE_DIR}:/usr/bin:/bin` },
-      baseEnv: { PATH: `${NODE_DIR}:/usr/bin:/bin` },
-      runner: async (o) => {
-        seen.push([...o.args]);
-        assert.equal(o.stdin, undefined, "pas de consigne sur stdin (la CLI ouvrirait son mode interactif)");
-        return {
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-          cancelled: false,
-          outputLimitExceeded: false,
-          durationMs: 1,
-        };
+  const make = (id: string) =>
+    new GenericCliConnector(
+      { signature: sig(id, "fakecli"), ...GENERIC_INVOCATIONS[id]! },
+      {
+        probeContext: { pathEnv: `${join(dir, "bin")}:${NODE_DIR}:/usr/bin:/bin` },
+        baseEnv: { PATH: `${NODE_DIR}:/usr/bin:/bin` },
+        runner: async (o) => {
+          seen.push([...o.args]);
+          assert.equal(o.stdin, undefined, "pas de consigne sur stdin (la CLI ouvrirait son mode interactif)");
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            cancelled: false,
+            outputLimitExceeded: false,
+            durationMs: 1,
+          };
+        },
       },
-    },
-  );
+    );
+  const c = make("hermes-cli");
   await c.probe();
   await collect(
     c.start(request(dir, { prompt: "Fais X", permissionsPolicyId: "manual" }), new AbortController().signal),
@@ -362,10 +370,28 @@ test("CLI générique : invocation non interactive (Hermes chat -Q -q), --yolo s
   await collect(
     c.start(request(dir, { prompt: "Fais Y", permissionsPolicyId: "autonomous" }), new AbortController().signal),
   );
+  // Mode « validation » : worktree isolé + revue humaine, la CLI travaille sans question (personne pour répondre).
   assert.deepEqual(seen, [
-    ["chat", "-Q", "-q", "Fais X"],
+    ["chat", "-Q", "--yolo", "-q", "Fais X"],
     ["chat", "-Q", "--yolo", "-q", "Fais Y"],
   ]);
+  // Hermes n'a pas de mode lecture seule : refus explicite, jamais une exécution qui pourrait écrire.
+  assert.equal(c.readOnlySupported, false);
+  assert.equal(supportsReadOnly(c), false);
+  const ro = await collect(
+    c.start(request(dir, { prompt: "Relis", permissionsPolicyId: "read-only" }), new AbortController().signal),
+  );
+  const last = ro.at(-1);
+  assert.ok(last?.kind === "failed" && last.code === "policy_denied");
+  assert.equal(seen.length, 2, "aucun processus lancé en lecture seule non supportée");
+  // Gemini : mode plan (lecture seule) au lieu de --yolo.
+  const g = make("gemini-cli");
+  await g.probe();
+  assert.equal(supportsReadOnly(g), true);
+  await collect(
+    g.start(request(dir, { prompt: "Relis", permissionsPolicyId: "read-only" }), new AbortController().signal),
+  );
+  assert.deepEqual(seen.at(-1), ["--skip-trust", "--approval-mode", "plan", "--prompt", "Relis"]);
 });
 
 test("bus de l'équipe : Claude reçoit une configuration temporaire, sans jeton dans argv ; Codex est désactivé jusqu'à une intégration sûre", () => {
@@ -406,4 +432,59 @@ test("bus de l'équipe : Claude reçoit une configuration temporaire, sans jeton
   }
   assert.equal(mcpConfigFor("hermes-cli", s), undefined);
   assert.equal(stripAnsi("\x1b[0m> build\x1b[32m ok\x1b[0m"), "> build ok");
+});
+
+test("AsyncQueue : `return()` (consommateur qui abandonne) libère la file et prévient le producteur", async () => {
+  let stopped = 0;
+  const q = new AsyncQueue<number>({ onReturn: () => stopped++ });
+  q.push(1);
+  q.push(2);
+  for await (const n of q) {
+    assert.equal(n, 1);
+    break; // appelle return()
+  }
+  assert.equal(stopped, 1, "le producteur est prévenu (ex. arrêt de la CLI)");
+  q.push(3);
+  const it = q[Symbol.asyncIterator]();
+  assert.deepEqual(await it.next(), { value: undefined, done: true }, "rien ne s'accumule après abandon");
+});
+
+test("runCliTask : une exception du normaliseur sur une ligne ne devient jamais une uncaughtException", async (t) => {
+  const dir = binDir(t, {});
+  const events = await collect(
+    runCliTask({
+      taskId: randomUUID(),
+      file: "/bin/sh",
+      args: [],
+      cwd: dir,
+      env: {},
+      timeoutMs: 5000,
+      signal: new AbortController().signal,
+      normalizer: {
+        onStdout(line, seq) {
+          if (line === "boom") throw new Error("parser cassé");
+          seq.emit({ kind: "output", text: line, channel: "stdout" });
+        },
+        finish(_exit, seq) {
+          seq.emit({ kind: "completed", resultRef: "x" });
+        },
+      },
+      runner: async (o) => {
+        o.onLine?.("boom", "stdout");
+        o.onLine?.("ok", "stdout");
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          cancelled: false,
+          outputLimitExceeded: false,
+          durationMs: 1,
+        };
+      },
+    }),
+  );
+  assert.deepEqual(
+    events.map((e) => e.kind),
+    ["output", "completed"],
+  );
 });
