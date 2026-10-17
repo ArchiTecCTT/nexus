@@ -1,7 +1,8 @@
 # Contribuer à Nexus AI
 
-Lire d'abord `docs/00_START_HERE.md`, la spécification `docs/ID/idee.md`, les décisions (`docs/GOUVERNANCE/`, `.coordination/DECISIONS.md`)
-et les ADR (`docs/adr/`). Une ambiguïté donne une question ou un ADR, jamais une invention.
+Lire d'abord `docs/ARCHITECTURE.md` (carte du code), `CLAUDE.md` (conventions), les décisions (`.coordination/DECISIONS.md`,
+`docs/GOUVERNANCE/`) et les ADR (`docs/adr/`). La spécification d'origine (`docs/SOURCES_ORIGINALES/Nexus_AI_SPEC_MASTER_v1.md`)
+reste une référence de conception ; en cas d'écart, le code et les décisions du propriétaire font foi. Une ambiguïté donne une question ou un ADR, jamais une invention.
 
 ## Environnement
 
@@ -13,8 +14,8 @@ et les ADR (`docs/adr/`). Une ambiguïté donne une question ou un ADR, jamais u
 | Commande | Rôle |
 |---|---|
 | `pnpm run check` | lint + formatage + typecheck + tous les tests unitaires et d'intégration |
-| `pnpm run e2e --workspace @nexus/desktop` | empaquetage puis E2E Electron (Playwright, sous `xvfb-run`) |
-| `npm start` | application en développement |
+| `pnpm --filter @nexus/desktop run e2e` | empaquetage puis E2E Electron (Playwright, sous `xvfb-run`) |
+| `pnpm start` | application en développement |
 | `pnpm run licenses` | audit des licences des dépendances embarquées (échoue sur licence incompatible ou inconnue) |
 | `pnpm run test:spikes` | preuves historiques du spike T-001 |
 
