@@ -54,8 +54,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb
       - run: pnpm install --frozen-lockfile
       - run: pnpm run generate
-      - name: Application empaquetée puis E2E (sécurité + interface)
+      - name: Application empaquetée puis E2E (sécurité + interface + accessibilité)
         run: |
           cd apps/desktop
           npx electron-forge package
-          xvfb-run -a node --test --test-concurrency=1 e2e/security.e2e.ts e2e/ui.e2e.ts
+          xvfb-run -a node --test --test-concurrency=1 e2e/security.e2e.ts e2e/ui.e2e.ts e2e/a11y.e2e.ts

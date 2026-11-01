@@ -18,6 +18,7 @@
 |---|---|
 | elkjs 0.9.3 (EPL-2.0), dépendance de Mermaid | acceptable : copyleft au niveau des fichiers, utilisé sans modification ; mention dans NOTICE |
 | khroma 2.1.0 (champ `license` absent) | MIT, vérifié dans le fichier `license` livré (correction tracée dans le script) |
+| axe-core 4.14.0 (MPL-2.0), dépendance de développement de `@nexus/desktop` | acceptable : utilisée uniquement par les E2E d'accessibilité (`e2e/a11y.e2e.ts`), jamais embarquée ni modifiée |
 | Contributions externes | prévoir CLA ou DCO avant d'accepter des contributions (cahier maître §26) |
 
 ## Avis de sécurité (npm audit, 11/10/2026)

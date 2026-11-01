@@ -18,7 +18,7 @@ pnpm run lint:fix                                     # oxlint --fix + oxfmt --w
 pnpm start                                            # app in development
 # E2E on the packaged app (as in .github/workflows/ci.yml):
 cd apps/desktop && pnpm exec electron-forge package && \
-  xvfb-run -a node --test --test-concurrency=1 e2e/security.e2e.ts e2e/ui.e2e.ts
+  xvfb-run -a node --test --test-concurrency=1 e2e/security.e2e.ts e2e/ui.e2e.ts e2e/a11y.e2e.ts
 ```
 
 Sandbox and PID-namespace tests need `bwrap`, `socat` and unprivileged user namespaces
